@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import (
     QAction,
     QCloseEvent,
@@ -192,19 +192,66 @@ class MainWindow(QMainWindow):
 
         return self._stack
 
-    def _build_tray(self) -> None:
-        """Create the system tray icon if a tray is available.
+    #: How often to re-check for a tray host (ms) and for how many attempts.
+    #: At login the app usually starts before the panel registers its SNI host,
+    #: so isSystemTrayAvailable() is briefly False; ~3 minutes covers even very
+    #: slow session startups without polling forever.
+    _TRAY_RETRY_INTERVAL_MS = 2000
+    _TRAY_RETRY_MAX_ATTEMPTS = 90
 
-        On COSMIC/Wayland an SNI host may or may not be exposed; when it is
-        unavailable the window simply runs without a tray and close-to-tray is
-        treated as a plain close.
+    def _build_tray(self) -> None:
+        """Create the system tray icon, retrying until a tray host appears.
+
+        On COSMIC/Wayland the SNI host is provided by the panel, which may
+        register seconds AFTER an autostarted app launches. If no host is
+        available yet, a timer re-checks every ``_TRAY_RETRY_INTERVAL_MS`` for
+        up to ``_TRAY_RETRY_MAX_ATTEMPTS`` tries; until then the window simply
+        runs without a tray and close-to-tray degrades per ``_close_action``.
         """
         self._tray: QSystemTrayIcon | None = None
+        self._tray_retry_attempts = 0
+        self._tray_retry_timer: QTimer | None = None
 
         if not QSystemTrayIcon.isSystemTrayAvailable():
-            _LOGGER.info("System tray not available; running without tray icon.")
+            _LOGGER.info(
+                "System tray not available yet; will keep checking for a tray "
+                "host every %d s.",
+                self._TRAY_RETRY_INTERVAL_MS // 1000,
+            )
+            timer = QTimer(self)
+            timer.setInterval(self._TRAY_RETRY_INTERVAL_MS)
+            timer.timeout.connect(self._retry_tray)
+            timer.start()
+            self._tray_retry_timer = timer
             return
 
+        self._create_tray()
+
+    def _retry_tray(self) -> None:
+        """Timer slot: build the tray as soon as a host registers."""
+        self._tray_retry_attempts += 1
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            if self._tray_retry_timer is not None:
+                self._tray_retry_timer.stop()
+                self._tray_retry_timer = None
+            _LOGGER.info(
+                "Tray host appeared after %d attempt(s); creating tray icon.",
+                self._tray_retry_attempts,
+            )
+            self._create_tray()
+            return
+        if self._tray_retry_attempts >= self._TRAY_RETRY_MAX_ATTEMPTS:
+            if self._tray_retry_timer is not None:
+                self._tray_retry_timer.stop()
+                self._tray_retry_timer = None
+            _LOGGER.info(
+                "No tray host appeared after %d attempts; running without a "
+                "tray icon (relaunch OpenKraken to open the window).",
+                self._tray_retry_attempts,
+            )
+
+    def _create_tray(self) -> None:
+        """Construct the tray icon, menu and wiring (host must be available)."""
         tray = QSystemTrayIcon(self)
         tray.setIcon(theme.make_tray_icon(None))
         tray.setToolTip("OpenKraken")

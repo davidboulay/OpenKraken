@@ -272,15 +272,20 @@ def main(argv: list[str] | None = None) -> int:
         app.aboutToQuit.connect(instance_server.close)
 
     # Decide visibility before starting the engine so we don't flash the window.
-    tray_available = QSystemTrayIcon.isSystemTrayAvailable()
-    if start_minimized and tray_available:
-        _LOGGER.info("Starting minimized to tray.")
-    else:
-        if start_minimized and not tray_available:
-            _LOGGER.warning(
-                "--minimized requested but no system tray is available; "
-                "showing the window instead."
+    # When minimized is requested the window stays hidden even if no tray is
+    # available yet: at login the app races the panel's tray host (it usually
+    # appears a few seconds later and MainWindow retries), and the window is
+    # always reachable by relaunching (single-instance activation) or via the
+    # tray once it materializes.
+    if start_minimized:
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            _LOGGER.info("Starting minimized to tray.")
+        else:
+            _LOGGER.info(
+                "Starting minimized; no tray host yet (will keep retrying). "
+                "Relaunch OpenKraken to open the window."
             )
+    else:
         window.show()
 
     # Start the engine only after the window's signals are connected so the
