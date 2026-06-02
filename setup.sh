@@ -27,10 +27,16 @@ ICON_PATH="$SCRIPT_DIR/krakencam/resources/kraken-cam.svg"
 
 GIT_LIQUIDCTL="git+https://github.com/liquidctl/liquidctl"
 
+# NZXT vendor id and where the device-access udev rule is installed.
+NZXT_VENDOR_ID="1e71"
+UDEV_RULE_PATH="/etc/udev/rules.d/70-kraken-cam.rules"
+UDEV_RULE_BODY='SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"'
+
 # --- pretty progress --------------------------------------------------------
 step() { printf '\n\033[1;35m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
 info() { printf '    %s\n' "$*"; }
 ok()   { printf '    \033[1;32mok\033[0m %s\n' "$*"; }
+warn() { printf '    \033[1;33m!!\033[0m %s\n' "$*"; }
 
 # --- 1. virtual environment -------------------------------------------------
 step "Creating virtual environment (.venv, --system-site-packages)"
@@ -97,7 +103,113 @@ if [[ ! -f "$ICON_PATH" ]]; then
     info "note: icon not found at $ICON_PATH (the menu entry will use a fallback icon)"
 fi
 
-# --- 6. done ----------------------------------------------------------------
+# --- 6. device access (udev rule) -------------------------------------------
+step "Checking Kraken device access (/dev/hidraw* permissions)"
+
+# Probe for a readable+writable hidraw belonging to NZXT (vendor 1e71).  We walk
+# /sys/class/hidraw/*/device/uevent looking for a HID_ID line whose vendor field
+# is 1E71, then os.access() the matching /dev/hidrawN for R_OK|W_OK.  Exit codes:
+#   0 = an NZXT hidraw is present AND read/writable by us (access OK)
+#   2 = no NZXT hidraw node is present at all (device unplugged / different host)
+#   1 = an NZXT hidraw is present but NOT accessible (need the udev rule)
+device_access_probe() {
+    "$PY" - "$NZXT_VENDOR_ID" <<'PY'
+import glob, os, sys
+
+vendor = sys.argv[1].upper()
+found_device = False
+accessible = False
+for uevent in glob.glob("/sys/class/hidraw/*/device/uevent"):
+    try:
+        with open(uevent, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        continue
+    # HID_ID lines look like: HID_ID=0003:00001E71:00003012
+    hid_id = ""
+    for line in text.splitlines():
+        if line.startswith("HID_ID="):
+            hid_id = line.split("=", 1)[1].upper()
+            break
+    if not hid_id or vendor not in hid_id:
+        continue
+    found_device = True
+    # /sys/class/hidraw/hidrawN/device/uevent -> /dev/hidrawN
+    name = uevent.split("/")[4]            # "hidrawN"
+    dev_node = "/dev/" + name
+    if os.access(dev_node, os.R_OK | os.W_OK):
+        accessible = True
+        break
+
+if accessible:
+    sys.exit(0)
+sys.exit(1 if found_device else 2)
+PY
+}
+
+install_udev_rule() {
+    # Returns 0 on success, non-zero on any failure (caller prints manual steps).
+    printf '%s\n' "$UDEV_RULE_BODY" | sudo tee "$UDEV_RULE_PATH" >/dev/null || return 1
+    sudo udevadm control --reload-rules || return 1
+    sudo udevadm trigger || return 1
+    return 0
+}
+
+print_manual_udev() {
+    info "To grant non-root access to the Kraken, create $UDEV_RULE_PATH containing:"
+    info ""
+    info "    $UDEV_RULE_BODY"
+    info ""
+    info "then run:"
+    info "    sudo udevadm control --reload-rules && sudo udevadm trigger"
+    info "and re-plug the cooler (or reboot)."
+}
+
+set +e
+device_access_probe
+probe_rc=$?
+set -e
+
+if [[ "$probe_rc" -eq 0 ]]; then
+    ok "device access OK (an NZXT hidraw is read/writable by $USER)"
+elif [[ ! -t 0 ]]; then
+    # Non-interactive (piped, CI, etc.): never prompt, never fail — just note it.
+    if [[ "$probe_rc" -eq 2 ]]; then
+        info "no NZXT (1e71) hidraw detected; skipping the udev-rule prompt (not a TTY)"
+    else
+        warn "NZXT device present but not accessible; skipping the udev-rule prompt (not a TTY)"
+    fi
+    print_manual_udev
+else
+    if [[ "$probe_rc" -eq 2 ]]; then
+        info "no NZXT (1e71) hidraw detected (device unplugged, or a different host)."
+    else
+        info "an NZXT device is present but not read/writable by $USER."
+    fi
+    if [[ -f "$UDEV_RULE_PATH" ]]; then
+        info "a rule already exists at $UDEV_RULE_PATH; leaving it untouched."
+        print_manual_udev
+    else
+        printf '    Install a udev rule at %s now (needs sudo)? [y/N] ' "$UDEV_RULE_PATH"
+        read -r reply || reply=""
+        case "$reply" in
+            [yY] | [yY][eE][sS])
+                if install_udev_rule; then
+                    ok "installed $UDEV_RULE_PATH and reloaded udev (re-plug the cooler to apply)"
+                else
+                    warn "could not install the udev rule (sudo declined or failed)."
+                    print_manual_udev
+                fi
+                ;;
+            *)
+                info "skipped udev-rule install (you can add it later)."
+                print_manual_udev
+                ;;
+        esac
+    fi
+fi
+
+# --- 7. done ----------------------------------------------------------------
 step "Setup complete"
 cat <<EOF
 

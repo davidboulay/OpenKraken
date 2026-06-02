@@ -27,6 +27,19 @@ def log(msg: str) -> None:
     sys.stdout.flush()
 
 
+#: Count of tests that were skipped because a not-yet-integrated helper was
+#: missing.  These are warnings, not failures, so the suite stays usable while
+#: the GNOME-compatibility work lands across app.py / main_window.py / config.py.
+_SKIPPED: list[str] = []
+
+
+def skip(reason: str) -> None:
+    """Record a soft skip (a missing in-progress helper) without failing."""
+    _SKIPPED.append(reason)
+    sys.stdout.write("    \033[1;33mSKIP\033[0m %s\n" % reason)
+    sys.stdout.flush()
+
+
 def test_imports() -> None:
     log("[1] importing every krakencam module ...")
     import krakencam  # noqa: F401
@@ -64,6 +77,27 @@ def test_config_roundtrip() -> None:
     assert cfg2.start_minimized == cfg.start_minimized, "start_minimized mismatch"
     assert cfg2.close_to_tray == cfg.close_to_tray, "close_to_tray mismatch"
     assert cfg2.apply_on_start == cfg.apply_on_start, "apply_on_start mismatch"
+
+    # --- run_in_background (GNOME / no-tray background mode) ------------------
+    # Field added by the sibling agent's config.py change; skip-but-warn until it
+    # lands so the suite stays usable mid-integration.
+    if hasattr(cfg, "run_in_background"):
+        assert cfg.run_in_background is True, "run_in_background must default to True"
+        assert (
+            cfg2.run_in_background == cfg.run_in_background
+        ), "run_in_background round-trip mismatch"
+        # It must be serialized so it actually persists, and reload as a bool.
+        assert "run_in_background" in d, "run_in_background not in to_dict() output"
+        # A non-default value (and a tolerant-parse garbage value) must survive.
+        flipped = AppConfig.from_dict({"run_in_background": False})
+        assert flipped.run_in_background is False, "run_in_background=False did not round-trip"
+        tolerant = AppConfig.from_dict({"run_in_background": "nope"})
+        assert isinstance(
+            tolerant.run_in_background, bool
+        ), "tolerant run_in_background parse did not yield a bool"
+        log("    run_in_background present (default True) and round-trips")
+    else:
+        skip("AppConfig.run_in_background not present yet (config.py sibling change)")
 
     assert cfg2.pump.mode == cfg.pump.mode, "pump.mode mismatch"
     assert cfg2.pump.source == cfg.pump.source, "pump.source mismatch"
@@ -153,6 +187,224 @@ def test_config_roundtrip() -> None:
     junk2 = AppConfig.from_dict({"lighting": "nope"})
     assert junk2.lighting.enabled is False, "tolerant lighting parse failed"
     log("    config round-trip equal; lighting + tolerant parse OK")
+
+
+def _pump(app, ms: int = 500) -> None:
+    """Spin the Qt event loop for ``ms`` milliseconds (deliver queued slots)."""
+    from PyQt6.QtCore import QEventLoop, QTimer
+
+    loop = QEventLoop()
+    QTimer.singleShot(ms, loop.quit)
+    loop.exec()
+
+
+def test_single_instance() -> None:
+    log("[*] app.setup_single_instance: server + local-socket activate round-trip ...")
+    from krakencam import app as appmod
+
+    if not hasattr(appmod, "setup_single_instance"):
+        skip("app.setup_single_instance not present yet (app.py sibling change)")
+        return
+
+    from PyQt6.QtNetwork import QLocalServer, QLocalSocket
+    from PyQt6.QtWidgets import QApplication
+
+    app = QApplication.instance() or QApplication(sys.argv)
+
+    # A unique per-run name so this test never collides with a real running
+    # instance (the production name is f"kraken-cam-{os.getuid()}").
+    name = "kraken-cam-smoke-%d-%d" % (os.getuid(), os.getpid())
+    # Make sure no stale socket from a previous aborted run lingers.
+    QLocalServer.removeServer(name)
+
+    activated: list[str] = []
+
+    def on_activate() -> None:
+        activated.append("activate")
+
+    server = appmod.setup_single_instance(name, on_activate)
+    assert server is not None, "setup_single_instance returned None for a free name"
+
+    try:
+        # 1) "activate" line -> the registered callback fires (this is what a
+        #    second invocation does to raise the running window).
+        client = QLocalSocket()
+        client.connectToServer(name)
+        assert client.waitForConnected(1000), (
+            "client could not connect to the single-instance server"
+        )
+        client.write(b"activate\n")
+        assert client.waitForBytesWritten(1000), "client write did not flush"
+        _pump(app)
+        client.disconnectFromServer()
+        assert activated == ["activate"], (
+            "on_activate callback did not fire on 'activate' line: %r" % activated
+        )
+
+        # 2) "ping" line must NOT raise the window (autostart --minimized double
+        #    fire only signals presence) -> callback count unchanged.
+        client2 = QLocalSocket()
+        client2.connectToServer(name)
+        assert client2.waitForConnected(1000), "second client could not connect"
+        client2.write(b"ping\n")
+        assert client2.waitForBytesWritten(1000), "ping write did not flush"
+        _pump(app)
+        client2.disconnectFromServer()
+        assert activated == ["activate"], (
+            "'ping' must not trigger on_activate: %r" % activated
+        )
+
+        # 3) The connect-probe main() uses to detect a running instance:
+        #    _notify_running_instance returns True while the server is up and
+        #    delivers the message. ('activate' here would fire the callback
+        #    again, so use the presence-only ping to keep the count stable.)
+        if hasattr(appmod, "_notify_running_instance"):
+            notified = appmod._notify_running_instance(name, activate=False)
+            _pump(app)
+            assert notified is True, (
+                "_notify_running_instance should detect the live server"
+            )
+            assert activated == ["activate"], (
+                "ping via _notify_running_instance must not fire on_activate: %r"
+                % activated
+            )
+        else:
+            skip("app._notify_running_instance not present (probe path untested)")
+
+        # 4) Live-collision protection: while THIS server owns the name, a second
+        #    setup_single_instance(name) on the same live name must NOT steal it.
+        #    (An unconditional removeServer would unlink the live socket and let a
+        #    second server listen, leaving two unreachable "primaries".)
+        second = appmod.setup_single_instance(name, lambda: activated.append("second"))
+        assert second is None, (
+            "a second setup_single_instance stole a LIVE socket name (two primaries)"
+        )
+        # The original server must still be reachable after the rejected collision.
+        client3 = QLocalSocket()
+        client3.connectToServer(name)
+        assert client3.waitForConnected(1000), (
+            "original server unreachable after a rejected second instance"
+        )
+        client3.write(b"activate\n")
+        assert client3.waitForBytesWritten(1000), "post-collision write did not flush"
+        _pump(app)
+        client3.disconnectFromServer()
+        assert activated == ["activate", "activate"], (
+            "original server did not handle activate after collision: %r" % activated
+        )
+
+        log(
+            "    single-instance: activate fires, ping ignored, probe detects "
+            "server, live collision rejected (no second primary)"
+        )
+    finally:
+        # Release the socket name regardless of outcome.
+        try:
+            server.close()
+        except Exception:  # pragma: no cover - defensive cleanup
+            pass
+        QLocalServer.removeServer(name)
+
+    # 5) With nothing listening, the probe must report "no running instance"
+    #    (False) so a fresh launch becomes the primary.
+    if hasattr(appmod, "_notify_running_instance"):
+        assert appmod._notify_running_instance(name, activate=True) is False, (
+            "_notify_running_instance should be False when no server owns the name"
+        )
+
+    # 6) Stale-socket recovery: a leftover socket FILE (no live listener, as after
+    #    a crash) must not block a fresh primary. setup_single_instance should
+    #    detect nobody is listening and reclaim the name.
+    stale_name = "kraken-cam-smoke-stale-%d-%d" % (os.getuid(), os.getpid())
+    QLocalServer.removeServer(stale_name)
+    crashed = QLocalServer()
+    assert crashed.listen(stale_name), "could not create the would-be-stale server"
+    # Simulate a crash: drop the listener without removeServer so the socket file
+    # is orphaned (Qt may leave the on-disk node behind).
+    crashed.setParent(None)
+    del crashed
+    app.processEvents()
+    recovered = appmod.setup_single_instance(stale_name, lambda: None)
+    try:
+        assert recovered is not None, (
+            "setup_single_instance failed to recover from a stale socket file"
+        )
+        assert recovered.isListening(), "recovered server is not listening"
+    finally:
+        if recovered is not None:
+            recovered.close()
+        QLocalServer.removeServer(stale_name)
+
+
+def test_close_action_matrix() -> None:
+    log("[*] MainWindow._close_action: tray / background / quit decision matrix ...")
+    from PyQt6.QtWidgets import QApplication
+    from krakencam.config import AppConfig
+    from krakencam.backend.device import KrakenDevice
+    from krakencam.backend.sensors import SystemSensors
+    from krakencam.backend.engine import ControlEngine
+    from krakencam.gui.main_window import MainWindow
+
+    app = QApplication.instance() or QApplication(sys.argv)
+
+    config = AppConfig()
+    device = KrakenDevice()  # constructed, NOT connected
+    sensors = SystemSensors()
+    engine = ControlEngine(device, sensors, config)  # constructed, NOT started
+
+    win = MainWindow(engine, config)
+
+    if not hasattr(win, "_close_action"):
+        skip("MainWindow._close_action not present yet (main_window.py sibling change)")
+        # Do NOT route teardown through win.close()/closeEvent here: closeEvent
+        # may depend on the very helper we just found missing. Drop the window
+        # without firing its close path.
+        win.deleteLater()
+        app.processEvents()
+        return
+
+    # run_in_background may not exist yet on the config; default to True (its
+    # spec'd default) so the matrix is meaningful even mid-integration.
+    has_rib = hasattr(config, "run_in_background")
+
+    def set_rib(value: bool) -> None:
+        if has_rib:
+            config.run_in_background = value
+
+    # Force "no tray" regardless of the real session: the decision must not
+    # depend on a tray host actually existing under the test harness.  The
+    # window owns its tray reference as ``_tray`` (see closeEvent), so a None
+    # there means "no tray" to _close_action.
+    win._tray = None
+
+    # 1) No tray + run_in_background -> "background".
+    set_rib(True)
+    action = win._close_action()
+    if has_rib:
+        assert action == "background", (
+            "no-tray + run_in_background should be 'background', got %r" % action
+        )
+
+    # 2) No tray + NOT run_in_background -> "quit".
+    set_rib(False)
+    action = win._close_action()
+    if has_rib:
+        assert action == "quit", (
+            "no-tray + run_in_background=False should be 'quit', got %r" % action
+        )
+
+    # The returned value must always be one of the three documented tokens,
+    # whatever the tray/config state.
+    assert win._close_action() in ("tray", "background", "quit"), (
+        "_close_action returned an undocumented token: %r" % win._close_action()
+    )
+
+    # Restore the default before tearing down.
+    set_rib(True)
+    log("    _close_action matrix OK (no-tray -> background/quit by config)")
+
+    win.close()
+    app.processEvents()
 
 
 def test_curves() -> None:
@@ -561,6 +813,8 @@ def test_lighting_page() -> None:
 def main() -> int:
     test_imports()
     test_config_roundtrip()
+    test_single_instance()
+    test_close_action_matrix()
     test_curves()
     test_lighting_fx()
     test_device_parse_lighting_info()
@@ -569,7 +823,12 @@ def main() -> int:
     test_sensors()
     test_gui()
     test_lighting_page()
-    log("\nALL SMOKE TESTS PASSED")
+    if _SKIPPED:
+        log("\nALL SMOKE TESTS PASSED (with %d skipped, pending integration):" % len(_SKIPPED))
+        for reason in _SKIPPED:
+            log("    - %s" % reason)
+    else:
+        log("\nALL SMOKE TESTS PASSED")
     return 0
 
 

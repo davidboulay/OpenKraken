@@ -281,6 +281,10 @@ class AppConfig:
     history_seconds: int = 600
     start_minimized: bool = False
     close_to_tray: bool = True
+    #: Keep the control engine running (cooling/lighting/LCD stay active) when the
+    #: window is closed on a desktop with no system tray, instead of quitting.
+    #: The window is hidden and re-launching Kraken CAM reopens it.
+    run_in_background: bool = True
     apply_on_start: bool = True
     pump: ChannelConfig = field(
         default_factory=lambda: ChannelConfig(
@@ -372,6 +376,7 @@ class AppConfig:
             "history_seconds": int(self.history_seconds),
             "start_minimized": bool(self.start_minimized),
             "close_to_tray": bool(self.close_to_tray),
+            "run_in_background": bool(self.run_in_background),
             "apply_on_start": bool(self.apply_on_start),
             "pump": self.pump.to_dict(),
             "fan": self.fan.to_dict(),
@@ -422,6 +427,7 @@ class AppConfig:
             history_seconds=_as_int(d.get("history_seconds"), defaults.history_seconds),
             start_minimized=_as_bool(d.get("start_minimized"), defaults.start_minimized),
             close_to_tray=_as_bool(d.get("close_to_tray"), defaults.close_to_tray),
+            run_in_background=_as_bool(d.get("run_in_background"), defaults.run_in_background),
             apply_on_start=_as_bool(d.get("apply_on_start"), defaults.apply_on_start),
             pump=pump,
             fan=fan,

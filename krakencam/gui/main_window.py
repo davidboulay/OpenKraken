@@ -14,7 +14,14 @@ from __future__ import annotations
 import logging
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction, QCloseEvent, QFontMetrics, QIcon
+from PyQt6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QFontMetrics,
+    QIcon,
+    QKeySequence,
+    QShortcut,
+)
 from PyQt6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -78,6 +85,10 @@ class MainWindow(QMainWindow):
         The shared application config (mutated in-place by pages).
     """
 
+    #: Set once (per process) the first time the window hides to background with
+    #: no tray, so the explanatory log line is emitted only once.
+    _logged_background_notice = False
+
     def __init__(self, engine: ControlEngine, config: AppConfig) -> None:
         super().__init__()
         self._engine = engine
@@ -97,6 +108,11 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._build_tray()
         self._connect_signals()
+
+        # Ctrl+Q always quits, even with no tray (where closing only hides the
+        # window). Documented in the Settings "run in background" tooltip.
+        self._quit_shortcut = QShortcut(QKeySequence("Ctrl+Q"), self)
+        self._quit_shortcut.activated.connect(self._quit)
 
         # Start on the dashboard.
         self._nav_buttons[0].setChecked(True)
@@ -312,6 +328,19 @@ class MainWindow(QMainWindow):
         else:
             self._restore_window()
 
+    def show_and_raise(self) -> None:
+        """Show, raise and focus the window.
+
+        Used by the single-instance activation path (a second launch asks the
+        running instance to surface its window). On Wayland ``raise_()`` /
+        ``activateWindow()`` are advisory requests to the compositor, which is
+        fine — the window is at least shown.
+        """
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self._update_show_hide_label()
+
     def _restore_window(self) -> None:
         self.showNormal()
         self.raise_()
@@ -376,11 +405,34 @@ class MainWindow(QMainWindow):
         self._engine.stop()
         QApplication.quit()
 
-    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 (Qt name)
-        """Hide to tray when configured, otherwise stop the engine and exit."""
-        tray_active = self._tray is not None and self._tray.isVisible()
+    def _close_action(self) -> str:
+        """Decide what closing the window should do.
 
-        if not self._really_quit and self._config.close_to_tray and tray_active:
+        Returns one of:
+
+        - ``"tray"`` — a tray exists and ``close_to_tray`` is set: hide to tray.
+        - ``"background"`` — no tray but ``run_in_background`` is set: hide the
+          window and keep the engine running (cooling/lighting/LCD stay active);
+          re-launching Kraken CAM reopens it.
+        - ``"quit"`` — stop the engine and exit the application.
+
+        An explicit user quit (``self._really_quit``) always yields ``"quit"``.
+        """
+        if self._really_quit:
+            return "quit"
+
+        tray_active = self._tray is not None and self._tray.isVisible()
+        if tray_active and self._config.close_to_tray:
+            return "tray"
+        if not tray_active and self._config.run_in_background:
+            return "background"
+        return "quit"
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 (Qt name)
+        """Hide to tray / background when configured, else stop and exit."""
+        action = self._close_action()
+
+        if action == "tray":
             event.ignore()
             self.hide()
             self._update_show_hide_label()
@@ -393,14 +445,25 @@ class MainWindow(QMainWindow):
                 )
             return
 
+        if action == "background":
+            event.ignore()
+            self.hide()
+            self._update_show_hide_label()
+            if not MainWindow._logged_background_notice:
+                MainWindow._logged_background_notice = True
+                _LOGGER.info(
+                    "running in background; launch Kraken CAM again to reopen "
+                    "the window (Ctrl+Q quits)"
+                )
+            return
+
         _LOGGER.info("Window closing; stopping engine.")
         self._really_quit = True
         self._engine.stop()
         event.accept()
-        # quitOnLastWindowClosed is False (so hide-to-tray works), so closing the
-        # window does not by itself end the event loop. Quit explicitly here or the
-        # process would keep spinning with no window (common on COSMIC/Wayland where
-        # no SNI tray host is exposed and close-to-tray falls through to here).
+        # quitOnLastWindowClosed is False (so hide-to-tray/background works), so
+        # closing the window does not by itself end the event loop. Quit
+        # explicitly here or the process would keep spinning with no window.
         QApplication.quit()
 
     # ------------------------------------------------------------ Qt ---

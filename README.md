@@ -100,7 +100,7 @@ Flags:
 
 | Flag             | Effect                                  |
 | ---------------- | --------------------------------------- |
-| `--minimized`    | Start hidden in the system tray         |
+| `--minimized`    | Start hidden (in the tray, or in the background without one) |
 | `--config PATH`  | Use an alternate config file            |
 | `--debug`        | Verbose (DEBUG-level) logging           |
 | `--version`      | Print version and exit                  |
@@ -121,27 +121,63 @@ login:
   sed -i 's|kraken-cam$|kraken-cam --minimized|' ~/.config/autostart/kraken-cam.desktop
   ```
 
+## GNOME / other desktops
+
+Kraken CAM works on stock GNOME, KDE, COSMIC, and others. The one thing that
+differs between desktops is the **system tray**:
+
+- **With a tray** (KDE, COSMIC's panel applet, GNOME *with* the
+  [AppIndicator/KStatusNotifierItem extension](https://extensions.gnome.org/extension/615/appindicator-support/)),
+  you get the tray icon, quick profile switching, and close-to-tray.
+- **Without a tray** (stock GNOME ships none by default), the app still keeps
+  your cooling and lighting active when you close the window:
+  - **Closing the window hides it** and leaves the control engine running in the
+    background (so CPU/GPU-temp curves and sensor LCD screens keep updating).
+    This is the **"Keep running in background when closed"** option on the
+    Settings page (enabled by default; ignored when a tray is present, where
+    *close to tray* applies instead).
+  - **Relaunch Kraken CAM** — from the application menu, the launcher, or
+    `.venv/bin/kraken-cam` — to **reopen the window**. A second instance does not
+    start; it just raises the running one (single-instance via a per-user socket
+    at `kraken-cam-$UID`).
+  - **`Ctrl+Q` quits** the app entirely (stops the engine and exits). Without a
+    tray this is the discoverable way to fully quit; you can also kill the
+    process.
+
+If you only ever rely on **liquid-temp curves** (which run inside the cooler's
+firmware), you do not need the app running at all after applying them once.
+
+### Wayland note
+
+PyQt6 at this project's floor (**≥ 6.4**, the version `setup.sh`/`pip` install
+and the one shipped on the target system) bundles the Qt **Wayland** platform
+plugin, so the app runs natively on Wayland sessions. If the Wayland plugin is
+missing, Qt falls back to **XWayland**, which is harmless — the only visible
+difference is that window raising on relaunch is a *request* the compositor may
+honour or queue, per Wayland's focus-stealing policy.
+
 ## Permissions
 
 liquidctl talks to the cooler over raw USB HID (`/dev/hidraw*` / the USB device
 node). To use it **without root**, your user needs write access to the device.
-On this machine that already works; on a fresh system add a udev rule for NZXT's
-vendor id `1e71`:
+On this machine that already works. **`setup.sh` checks this for you**: it probes
+for an NZXT (`1e71`) `hidraw` node and, if one is present but not read/writable by
+your user, *offers* to install the udev rule below (it never fails setup if you
+decline, and stays silent when run non-interactively).
 
-Create `/etc/udev/rules.d/99-kraken-cam.rules`:
+To add the rule **manually**, create `/etc/udev/rules.d/70-kraken-cam.rules`:
 
 ```udev
 # NZXT devices (incl. Kraken 2024 Elite RGB, 1e71:3012) — accessible to plugdev
-SUBSYSTEMS=="usb", ATTRS{idVendor}=="1e71", MODE="0660", TAG+="uaccess", GROUP="plugdev"
-KERNEL=="hidraw*", ATTRS{idVendor}=="1e71", MODE="0660", TAG+="uaccess", GROUP="plugdev"
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
 ```
 
 Then reload and re-plug (or reboot):
 
 ```sh
-sudo usermod -aG plugdev "$USER"      # if you rely on the plugdev group
 sudo udevadm control --reload-rules
 sudo udevadm trigger
+sudo usermod -aG plugdev "$USER"      # only if you rely on the plugdev fallback
 ```
 
 The `TAG+="uaccess"` line is usually enough on systemd-logind desktops; the
@@ -226,8 +262,8 @@ rm -rf ~/.config/kraken-cam                  # config + cached LCD media (option
 # then delete the cloned project directory
 ```
 
-Any udev rule you added (`/etc/udev/rules.d/99-kraken-cam.rules`) can be removed
-separately with `sudo`.
+Any udev rule that was installed (`/etc/udev/rules.d/70-kraken-cam.rules`) can be
+removed separately with `sudo`.
 
 ## License
 

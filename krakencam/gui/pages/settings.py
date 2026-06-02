@@ -108,6 +108,16 @@ class SettingsPage(QWidget):
         self._close_tray = QCheckBox("Close to tray")
         form.addRow("", self._close_tray)
 
+        self._run_background = QCheckBox(
+            "Keep running in background when closed (no tray)"
+        )
+        self._run_background.setToolTip(
+            "Without a system tray (e.g. stock GNOME), closing the window keeps "
+            "cooling/lighting active. Reopen by launching Kraken CAM again. "
+            "Press Ctrl+Q to quit."
+        )
+        form.addRow("", self._run_background)
+
         self._apply_start = QCheckBox("Apply saved settings on start")
         form.addRow("", self._apply_start)
 
@@ -166,6 +176,7 @@ class SettingsPage(QWidget):
         self._history_spin.setValue(min(3600, max(60, int(cfg.history_seconds))))
         self._start_min.setChecked(bool(cfg.start_minimized))
         self._close_tray.setChecked(bool(cfg.close_to_tray))
+        self._run_background.setChecked(bool(cfg.run_in_background))
         self._apply_start.setChecked(bool(cfg.apply_on_start))
 
     def _refresh_device_info(self) -> None:
@@ -209,6 +220,7 @@ class SettingsPage(QWidget):
         cfg.history_seconds = int(self._history_spin.value())
         cfg.start_minimized = bool(self._start_min.isChecked())
         cfg.close_to_tray = bool(self._close_tray.isChecked())
+        cfg.run_in_background = bool(self._run_background.isChecked())
         cfg.apply_on_start = bool(self._apply_start.isChecked())
 
         try:
