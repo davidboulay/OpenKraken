@@ -1,4 +1,4 @@
-"""Live hardware integration test for Kraken CAM.
+"""Live hardware integration test for OpenKraken.
 
 Run ONLY when no other process (liquidctl CLI, the GUI app) is using the
 cooler.  Exercises every device path the app uses, restoring previous
@@ -21,10 +21,10 @@ import time
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
 
-from krakencam.backend.device import KrakenDevice
-from krakencam.backend.sensors import SystemSensors
-from krakencam.backend import lcd_render
-from krakencam.backend.curves import software_failsafe
+from openkraken.backend.device import KrakenDevice
+from openkraken.backend.sensors import SystemSensors
+from openkraken.backend import lcd_render
+from openkraken.backend.curves import software_failsafe
 
 ok = True
 

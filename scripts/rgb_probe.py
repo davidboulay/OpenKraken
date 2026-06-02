@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Gated hardware validation probe for Kraken CAM native LED control.
+"""Gated hardware validation probe for OpenKraken native LED control.
 
 This script is the **only** sanctioned way to answer the open hardware
 questions in ``PROTOCOL.md`` §10 for the NZXT Kraken 2024 Elite RGB
@@ -9,8 +9,8 @@ explicit user consent and nothing else holding the device* (no GUI, no
 ``liquidctl`` CLI, no ``hw_test.py``).
 
 It touches the device **only** through the same vetted choke-point the app
-uses (:class:`krakencam.backend.device.KrakenDevice`) and the pure host-side
-effect engine (:mod:`krakencam.backend.lighting_fx`).  Every byte it sends
+uses (:class:`openkraken.backend.device.KrakenDevice`) and the pure host-side
+effect engine (:mod:`openkraken.backend.lighting_fx`).  Every byte it sends
 comes from ``PROTOCOL.md`` confirmed sections §3/§4/§6 via
 ``device.write_lighting_frame`` — this probe never builds wire packets itself
 and never emits anything from the §7 do-not-use list.
@@ -19,7 +19,7 @@ What it does, in order (each step answers a ``PROTOCOL.md`` §10 item):
 
   0. connect() + initialize() (cooling/LCD untouched).
   1. query_lighting_info(): dump the raw ``0x20 0x03`` reply hex and the
-     parsed :class:`~krakencam.backend.device.LightingInfo`        → §10.3
+     parsed :class:`~openkraken.backend.device.LightingInfo`        → §10.3
   2. write a fixed purple frame to the *ring* with apply-variant 0 (OpenRGB
      bytes); ask whether all 24 LEDs lit.  If "no", retry with apply-variant
      1 (liquidctl bytes) and ask again.                            → §10.1 + §10.7
@@ -55,8 +55,8 @@ from pathlib import Path
 # Make the package importable when run from the repo root.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from krakencam.backend import lighting_fx
-from krakencam.backend.device import KrakenDevice
+from openkraken.backend import lighting_fx
+from openkraken.backend.device import KrakenDevice
 
 logger = logging.getLogger("rgb_probe")
 
@@ -472,11 +472,11 @@ def print_results(
 def confirm_gate(assume_yes: bool) -> bool:
     """Require explicit consent before writing to the live cooler."""
     out("=" * 70)
-    out("Kraken CAM — RGB HARDWARE PROBE")
+    out("OpenKraken — RGB HARDWARE PROBE")
     out("=" * 70)
     out("This will WRITE real RGB frames to the attached NZXT Kraken 2024")
     out("Elite RGB cooler (ring + fan LEDs). Make sure NOTHING else is using")
-    out("the device: close the Kraken CAM GUI, the liquidctl CLI, and any")
+    out("the device: close the OpenKraken GUI, the liquidctl CLI, and any")
     out("other monitoring tool first. Cooling/pump/LCD are NOT touched.")
     out("")
     if assume_yes:
@@ -486,7 +486,7 @@ def confirm_gate(assume_yes: bool) -> bool:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Kraken CAM RGB hardware probe.")
+    parser = argparse.ArgumentParser(description="OpenKraken RGB hardware probe.")
     parser.add_argument(
         "--yes",
         action="store_true",

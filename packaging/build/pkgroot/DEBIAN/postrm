@@ -1,0 +1,14 @@
+#!/bin/sh
+# postrm — reload udev rules after our rule file is gone, and refresh the
+# desktop database so the (now removed) launcher disappears.
+set -e
+
+if command -v udevadm >/dev/null 2>&1; then
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    udevadm trigger >/dev/null 2>&1 || true
+fi
+if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database >/dev/null 2>&1 || true
+fi
+
+exit 0

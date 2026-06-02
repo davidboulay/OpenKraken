@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offscreen integration smoke test for Kraken CAM.
+"""Offscreen integration smoke test for OpenKraken.
 
 Exercises every module WITHOUT touching hardware: no device.connect(), no
 engine.start(), no hidraw, no liquidctl CLI. Reading real sysfs/proc for the
@@ -41,32 +41,32 @@ def skip(reason: str) -> None:
 
 
 def test_imports() -> None:
-    log("[1] importing every krakencam module ...")
-    import krakencam  # noqa: F401
-    import krakencam.config  # noqa: F401
-    import krakencam.backend.device  # noqa: F401
-    import krakencam.backend.sensors  # noqa: F401
-    import krakencam.backend.curves  # noqa: F401
-    import krakencam.backend.lcd_render  # noqa: F401
-    import krakencam.backend.engine  # noqa: F401
-    import krakencam.gui.theme  # noqa: F401
-    import krakencam.gui.widgets.gauge  # noqa: F401
-    import krakencam.gui.widgets.graph  # noqa: F401
-    import krakencam.gui.widgets.curve_editor  # noqa: F401
-    import krakencam.backend.lighting_fx  # noqa: F401
-    import krakencam.gui.pages.dashboard  # noqa: F401
-    import krakencam.gui.pages.cooling  # noqa: F401
-    import krakencam.gui.pages.lcd  # noqa: F401
-    import krakencam.gui.pages.lighting  # noqa: F401
-    import krakencam.gui.pages.settings  # noqa: F401
-    import krakencam.gui.main_window  # noqa: F401
-    import krakencam.app  # noqa: F401
-    log("    all imports OK; version=%s" % krakencam.__version__)
+    log("[1] importing every openkraken module ...")
+    import openkraken  # noqa: F401
+    import openkraken.config  # noqa: F401
+    import openkraken.backend.device  # noqa: F401
+    import openkraken.backend.sensors  # noqa: F401
+    import openkraken.backend.curves  # noqa: F401
+    import openkraken.backend.lcd_render  # noqa: F401
+    import openkraken.backend.engine  # noqa: F401
+    import openkraken.gui.theme  # noqa: F401
+    import openkraken.gui.widgets.gauge  # noqa: F401
+    import openkraken.gui.widgets.graph  # noqa: F401
+    import openkraken.gui.widgets.curve_editor  # noqa: F401
+    import openkraken.backend.lighting_fx  # noqa: F401
+    import openkraken.gui.pages.dashboard  # noqa: F401
+    import openkraken.gui.pages.cooling  # noqa: F401
+    import openkraken.gui.pages.lcd  # noqa: F401
+    import openkraken.gui.pages.lighting  # noqa: F401
+    import openkraken.gui.pages.settings  # noqa: F401
+    import openkraken.gui.main_window  # noqa: F401
+    import openkraken.app  # noqa: F401
+    log("    all imports OK; version=%s" % openkraken.__version__)
 
 
 def test_config_roundtrip() -> None:
     log("[2] AppConfig defaults -> to_dict -> from_dict round-trip ...")
-    from krakencam.config import AppConfig
+    from openkraken.config import AppConfig
 
     cfg = AppConfig()
     d = cfg.to_dict()
@@ -134,7 +134,7 @@ def test_config_roundtrip() -> None:
     assert cfg2 == cfg, "round-tripped AppConfig not equal to original"
 
     # A non-default lighting config must survive the round-trip exactly.
-    from krakencam.config import LightingConfig, LightingChannelConfig
+    from openkraken.config import LightingConfig, LightingChannelConfig
 
     custom = AppConfig()
     custom.lighting = LightingConfig(
@@ -200,7 +200,7 @@ def _pump(app, ms: int = 500) -> None:
 
 def test_single_instance() -> None:
     log("[*] app.setup_single_instance: server + local-socket activate round-trip ...")
-    from krakencam import app as appmod
+    from openkraken import app as appmod
 
     if not hasattr(appmod, "setup_single_instance"):
         skip("app.setup_single_instance not present yet (app.py sibling change)")
@@ -212,8 +212,8 @@ def test_single_instance() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
 
     # A unique per-run name so this test never collides with a real running
-    # instance (the production name is f"kraken-cam-{os.getuid()}").
-    name = "kraken-cam-smoke-%d-%d" % (os.getuid(), os.getpid())
+    # instance (the production name is f"openkraken-{os.getuid()}").
+    name = "openkraken-smoke-%d-%d" % (os.getuid(), os.getpid())
     # Make sure no stale socket from a previous aborted run lingers.
     QLocalServer.removeServer(name)
 
@@ -315,7 +315,7 @@ def test_single_instance() -> None:
     # 6) Stale-socket recovery: a leftover socket FILE (no live listener, as after
     #    a crash) must not block a fresh primary. setup_single_instance should
     #    detect nobody is listening and reclaim the name.
-    stale_name = "kraken-cam-smoke-stale-%d-%d" % (os.getuid(), os.getpid())
+    stale_name = "openkraken-smoke-stale-%d-%d" % (os.getuid(), os.getpid())
     QLocalServer.removeServer(stale_name)
     crashed = QLocalServer()
     assert crashed.listen(stale_name), "could not create the would-be-stale server"
@@ -339,11 +339,11 @@ def test_single_instance() -> None:
 def test_close_action_matrix() -> None:
     log("[*] MainWindow._close_action: tray / background / quit decision matrix ...")
     from PyQt6.QtWidgets import QApplication
-    from krakencam.config import AppConfig
-    from krakencam.backend.device import KrakenDevice
-    from krakencam.backend.sensors import SystemSensors
-    from krakencam.backend.engine import ControlEngine
-    from krakencam.gui.main_window import MainWindow
+    from openkraken.config import AppConfig
+    from openkraken.backend.device import KrakenDevice
+    from openkraken.backend.sensors import SystemSensors
+    from openkraken.backend.engine import ControlEngine
+    from openkraken.gui.main_window import MainWindow
 
     app = QApplication.instance() or QApplication(sys.argv)
 
@@ -409,7 +409,7 @@ def test_close_action_matrix() -> None:
 
 def test_curves() -> None:
     log("[3] curves.interpolate / DutySmoother ...")
-    from krakencam.backend import curves
+    from openkraken.backend import curves
 
     # Empty list -> 50.0 per spec.
     assert curves.interpolate([], 40.0) == 50.0, "empty interpolate != 50.0"
@@ -446,7 +446,7 @@ def test_curves() -> None:
 
 def test_lighting_fx() -> None:
     log("[*] lighting_fx.frame for every mode (length / black / determinism) ...")
-    from krakencam.backend import lighting_fx
+    from openkraken.backend import lighting_fx
 
     led_count = 24                       # the ring; PROTOCOL.md §2
     palette = [(124, 58, 237), (255, 0, 0), (0, 200, 80), (10, 10, 240)]
@@ -515,7 +515,7 @@ def test_lighting_fx() -> None:
 
 def test_device_parse_lighting_info() -> None:
     log("[*] device._parse_lighting_info: synthetic 0x20 0x03 reply (PROTOCOL.md §6) ...")
-    from krakencam.backend import device as devmod
+    from openkraken.backend import device as devmod
 
     # Build a synthetic 64-byte 0x21 0x03 reply:
     #   byte 14 = channel_count (2)
@@ -565,7 +565,7 @@ class _FakeLightingDevice:
     """No-hardware stand-in exposing only what the engine's lighting path uses."""
 
     def __init__(self) -> None:
-        from krakencam.backend.device import LightingInfo
+        from openkraken.backend.device import LightingInfo
 
         self.is_connected = True
         self.lighting_info = LightingInfo(
@@ -583,9 +583,9 @@ class _FakeLightingDevice:
 
 def test_engine_apply_lighting() -> None:
     log("[*] engine._do_apply_lighting against a fake device (no hardware) ...")
-    from krakencam.config import AppConfig, LightingConfig, LightingChannelConfig
-    from krakencam.backend.engine import ControlEngine
-    from krakencam.backend.sensors import SystemSensors
+    from openkraken.config import AppConfig, LightingConfig, LightingChannelConfig
+    from openkraken.backend.engine import ControlEngine
+    from openkraken.backend.sensors import SystemSensors
 
     config = AppConfig()
     fake = _FakeLightingDevice()
@@ -631,7 +631,7 @@ def test_engine_apply_lighting() -> None:
 
 def test_lcd_render() -> None:
     log("[4] lcd_render.render for all styles (realistic + all-None) ...")
-    from krakencam.backend import lcd_render
+    from openkraken.backend import lcd_render
 
     realistic = lcd_render.LcdData(
         liquid_temp=41.3,
@@ -650,14 +650,14 @@ def test_lcd_render() -> None:
             assert img.size == (640, 640), "%s/%s wrong size: %r" % (style, tag, img.size)
             assert img.mode == "RGB", "%s/%s wrong mode: %r" % (style, tag, img.mode)
     # render_to_file to tmpfs.
-    out = lcd_render.render_to_file("liquid_ring", realistic, "/dev/shm/krakencam_smoke_lcd.png")
+    out = lcd_render.render_to_file("liquid_ring", realistic, "/dev/shm/openkraken_smoke_lcd.png")
     assert Path(out).exists(), "render_to_file did not write file"
     log("    rendered %d styles x 2 datasets, all 640x640 RGB" % len(lcd_render.STYLES))
 
 
 def test_sensors() -> None:
     log("[5] SystemSensors().read() twice (real read-only sysfs) ...")
-    from krakencam.backend.sensors import SystemSensors
+    from openkraken.backend.sensors import SystemSensors
 
     s = SystemSensors()
     snap1 = s.read()
@@ -674,12 +674,12 @@ def test_sensors() -> None:
 def test_gui() -> None:
     log("[6] QApplication + KrakenDevice + SystemSensors + ControlEngine + MainWindow ...")
     from PyQt6.QtWidgets import QApplication
-    from krakencam.config import AppConfig
-    from krakencam.backend.device import KrakenDevice, DeviceStatus
-    from krakencam.backend.sensors import SystemSensors, SystemSnapshot
-    from krakencam.backend.engine import ControlEngine
-    from krakencam.gui.main_window import MainWindow
-    from krakencam.gui import theme
+    from openkraken.config import AppConfig
+    from openkraken.backend.device import KrakenDevice, DeviceStatus
+    from openkraken.backend.sensors import SystemSensors, SystemSnapshot
+    from openkraken.backend.engine import ControlEngine
+    from openkraken.gui.main_window import MainWindow
+    from openkraken.gui import theme
 
     app = QApplication.instance() or QApplication(sys.argv)
     theme.apply_theme(app)
@@ -753,7 +753,7 @@ def test_gui() -> None:
     app.processEvents()
     app.processEvents()
 
-    out = "/tmp/krakencam_window.png"
+    out = "/tmp/openkraken_window.png"
     pix = win.grab()
     ok = pix.save(out, "PNG")
     assert ok, "failed to grab/save window screenshot"
@@ -768,12 +768,12 @@ def test_lighting_page() -> None:
     from PyQt6.QtCore import QSize
     from PyQt6.QtGui import QPixmap, QPainter
     from PyQt6.QtWidgets import QApplication
-    from krakencam.config import AppConfig
-    from krakencam.backend.device import KrakenDevice
-    from krakencam.backend.sensors import SystemSensors
-    from krakencam.backend.engine import ControlEngine
-    from krakencam.gui.pages.lighting import LightingPage
-    from krakencam.gui import theme
+    from openkraken.config import AppConfig
+    from openkraken.backend.device import KrakenDevice
+    from openkraken.backend.sensors import SystemSensors
+    from openkraken.backend.engine import ControlEngine
+    from openkraken.gui.pages.lighting import LightingPage
+    from openkraken.gui import theme
 
     app = QApplication.instance() or QApplication(sys.argv)
     theme.apply_theme(app)

@@ -3,13 +3,13 @@ requires = ["setuptools>=61", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "kraken-cam"
+name = "openkraken"
 version = "0.1.0"
 description = "A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl)."
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
-authors = [{ name = "Kraken CAM contributors" }]
+authors = [{ name = "OpenKraken contributors" }]
 keywords = ["nzxt", "kraken", "liquidctl", "aio", "cooler", "lcd", "pyqt6", "linux"]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -38,18 +38,18 @@ dependencies = [
 gui = ["PyQt6>=6.4"]
 
 [project.urls]
-Homepage = "https://github.com/liquidctl/liquidctl"
+Homepage = "https://github.com/davidboulay/OpenKraken"
 "liquidctl" = "https://github.com/liquidctl/liquidctl"
 
 [project.scripts]
-kraken-cam = "krakencam.app:main"
+openkraken = "openkraken.app:main"
 
 [tool.setuptools]
 # Ship the hand-written SVG icon and any other static assets alongside the code.
 include-package-data = true
 
 [tool.setuptools.packages.find]
-include = ["krakencam", "krakencam.*"]
+include = ["openkraken", "openkraken.*"]
 
 [tool.setuptools.package-data]
-krakencam = ["resources/*.svg", "resources/*.png"]
+openkraken = ["resources/*.svg", "resources/*.png"]

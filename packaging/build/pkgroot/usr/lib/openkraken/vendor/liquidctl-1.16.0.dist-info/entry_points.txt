@@ -1,0 +1,2 @@
+[console_scripts]
+liquidctl = liquidctl.cli:main

@@ -1,4 +1,4 @@
-# Kraken CAM — Lighting feature interface addendum
+# OpenKraken — Lighting feature interface addendum
 
 Extends `INTERFACES.md` (same rules apply). Adds native LED control for the
 Kraken 2024 Elite RGB: the 24-LED pump ring and the RGB Core fan channel,
@@ -6,7 +6,7 @@ spoken directly over the device's HID interface per `PROTOCOL.md` (the wire
 protocol document — the single source of truth for byte layouts; device.py
 encapsulates ALL of it, nothing byte-level leaks above device.py).
 
-## krakencam/config.py — additions
+## openkraken/config.py — additions
 
 ```python
 @dataclass
@@ -26,7 +26,7 @@ class LightingConfig:
 AppConfig.lighting: LightingConfig      # new field; from_dict tolerant as usual
 ```
 
-## krakencam/backend/device.py — additions
+## openkraken/backend/device.py — additions
 
 ALL byte layouts come from PROTOCOL.md §3, §4, §6 (and ONLY the confirmed
 sections — nothing from §7 do-not-use or §9 FYI tables). Native HID I/O goes
@@ -61,7 +61,7 @@ class KrakenDevice:
         # 0x08 liquidctl) so the hardware probe can A/B them; default index 0.
 ```
 
-## krakencam/backend/lighting_fx.py — NEW module (pure functions, no Qt, no I/O)
+## openkraken/backend/lighting_fx.py — NEW module (pure functions, no Qt, no I/O)
 
 Host-side effect engine (PROTOCOL.md §5: device hardware modes are rejected;
 we stream Direct frames at ~1 FPS).
@@ -90,7 +90,7 @@ def frame(mode: str, colors: list[tuple[int,int,int]], brightness: int,
     # §5 FPS limit) — design transitions as slow drifts, not fast flashes.
 ```
 
-## krakencam/backend/engine.py — additions
+## openkraken/backend/engine.py — additions
 
 ```python
 def apply_lighting(self, cfg: LightingConfig) -> None   # queued like apply_lcd
@@ -106,7 +106,7 @@ def apply_lighting(self, cfg: LightingConfig) -> None   # queued like apply_lcd
 - LCD sensor pushes and lighting writes share the device lock — never block the
   status tick more than one frame.
 
-## krakencam/gui/pages/lighting.py — new page `LightingPage`
+## openkraken/gui/pages/lighting.py — new page `LightingPage`
 
 `__init__(self, engine, config, parent=None)` like other pages.
 - Top: "Control LEDs" enable checkbox + "Sync ring & fans" checkbox.
@@ -126,7 +126,7 @@ def apply_lighting(self, cfg: LightingConfig) -> None   # queued like apply_lcd
 - A small info line shows detected channels from `engine` (via a getter that
   reads device.lighting_info): e.g. "Ring: 24 LEDs · Fans: 16 LEDs (detected)".
 
-## krakencam/gui/main_window.py — change
+## openkraken/gui/main_window.py — change
 
 Sidebar nav gains "Lighting" between Cooling and LCD; page wired into the stack.
 Tray menu unchanged.

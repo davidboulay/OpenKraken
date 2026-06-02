@@ -1,4 +1,4 @@
-# Kraken CAM — Interface Specification
+# OpenKraken — Interface Specification
 
 A Linux clone of NZXT CAM for the **NZXT Kraken 2024 Elite RGB** (USB `1e71:3012`),
 built on PyQt6 + liquidctl. This document is the **single source of truth** for all
@@ -37,13 +37,13 @@ in parallel against these signatures.
 ## Project layout
 
 ```
-kraken-cam/
+openkraken/
 ├── INTERFACES.md            (this file)
 ├── pyproject.toml
 ├── README.md
 ├── setup.sh                 venv bootstrap + launcher + .desktop install
-├── kraken-cam.desktop
-└── krakencam/
+├── openkraken.desktop
+└── openkraken/
     ├── __init__.py          __version__ = "0.1.0"
     ├── __main__.py
     ├── app.py
@@ -69,10 +69,10 @@ development — the real device is attached to this machine; integration testing
 
 ---
 
-## krakencam/config.py
+## openkraken/config.py
 
 ```python
-DEFAULT_CONFIG_DIR = Path.home() / ".config" / "kraken-cam"   # media cache: DEFAULT_CONFIG_DIR / "media"
+DEFAULT_CONFIG_DIR = Path.home() / ".config" / "openkraken"   # media cache: DEFAULT_CONFIG_DIR / "media"
 
 @dataclass
 class ChannelConfig:
@@ -115,7 +115,7 @@ JSON file at `DEFAULT_CONFIG_DIR / "config.json"`. Tuples may round-trip as list
 
 ---
 
-## krakencam/backend/device.py
+## openkraken/backend/device.py
 
 Thread-safe wrapper around the liquidctl driver. **All device I/O in the whole app goes
 through this class.** Uses an internal `threading.RLock` around every driver call.
@@ -170,7 +170,7 @@ plainly; no hwmon is bound so the driver writes directly anyway.
 
 ---
 
-## krakencam/backend/sensors.py
+## openkraken/backend/sensors.py
 
 ```python
 @dataclass
@@ -200,7 +200,7 @@ power via hwmon `power1_average` (fall back `power1_input`), µW → W.
 
 ---
 
-## krakencam/backend/curves.py
+## openkraken/backend/curves.py
 
 ```python
 PROFILES: dict[str, dict[str, list[tuple[float, int]]]] = {
@@ -235,7 +235,7 @@ class DutySmoother:
 
 ---
 
-## krakencam/backend/lcd_render.py
+## openkraken/backend/lcd_render.py
 
 Pillow rendering of 640×640 sensor screens for the round LCD. Pure functions, no Qt.
 
@@ -258,7 +258,7 @@ class LcdData:
     pump_rpm: int | None
     fan_rpm: int | None
 
-def render_to_file(style: str, data: LcdData, path: str = "/dev/shm/krakencam_lcd.png") -> str
+def render_to_file(style: str, data: LcdData, path: str = "/dev/shm/openkraken_lcd.png") -> str
     # returns path written (PNG). /dev/shm => tmpfs, no SSD wear at 0.5 Hz.
 ```
 
@@ -271,7 +271,7 @@ fallback `ImageFont.load_default(size=…)`. Missing values render as `"--"`.
 
 ---
 
-## krakencam/backend/engine.py
+## openkraken/backend/engine.py
 
 The control loop. A `QThread` subclass owning **all** periodic work; the GUI never
 touches `KrakenDevice` / `SystemSensors` directly — it calls the engine's thread-safe
@@ -330,7 +330,7 @@ thread (they're already serialized by the device lock); skip a sensor tick if ne
 
 ---
 
-## krakencam/gui/theme.py
+## openkraken/gui/theme.py
 
 ```python
 COLORS = {
@@ -351,7 +351,7 @@ QSpinBox/QDoubleSpinBox, QCheckBox, QStatusBar. Sidebar buttons get
 `setProperty("sidebar", True)` and QSS `QPushButton[sidebar="true"]{...}` — left-aligned,
 tall (44 px), accent left-border when checked.
 
-## krakencam/gui/widgets/gauge.py
+## openkraken/gui/widgets/gauge.py
 
 ```python
 class GaugeTile(QWidget):
@@ -363,7 +363,7 @@ class GaugeTile(QWidget):
 270° arc gauge (135°→405°), 10 px pen, rounded caps; arc color switches to warn/crit
 colors past thresholds. Fixed-ish size ~170×190, scales with layout. Pure QPainter.
 
-## krakencam/gui/widgets/graph.py
+## openkraken/gui/widgets/graph.py
 
 ```python
 class TimeSeriesGraph(QWidget):
@@ -377,7 +377,7 @@ QPainter: panel background, dotted horizontal gridlines + y tick labels, anti-al
 2 px polylines, auto y-range when y_min/y_max None (pad 10 %), legend chips top-left,
 "now" at right edge, x tick labels as `-5m`, `-2m`, `0`. Repaint on set_series.
 
-## krakencam/gui/widgets/curve_editor.py
+## openkraken/gui/widgets/curve_editor.py
 
 ```python
 class CurveEditor(QWidget):
@@ -394,7 +394,7 @@ right-click point = remove (min 2 points remain), grid + axis labels (°C / %),
 filled area under curve (translucent accent), points are 8 px accent circles with
 hover halo. Margins ~36 px left/bottom for labels. Emit `curveChanged` on mouse release.
 
-## krakencam/gui/pages — common pattern
+## openkraken/gui/pages — common pattern
 
 Each page is a QWidget with `def __init__(self, engine: ControlEngine, config: AppConfig, parent=None)`.
 Pages connect to `engine.sample_ready` themselves. Pages that mutate config call
@@ -435,13 +435,13 @@ apply saved settings on start. Device box: model, firmware, connection state + R
 button. About box: version, link to liquidctl, disclaimer. Save button persists + 
 `engine.update_config`.
 
-## krakencam/gui/main_window.py
+## openkraken/gui/main_window.py
 
 ```python
 class MainWindow(QMainWindow):
     def __init__(self, engine: ControlEngine, config: AppConfig)
 ```
-920×640 min. Left sidebar 200 px: app title "KRAKEN CAM", nav buttons
+920×640 min. Left sidebar 200 px: app title "OPENKRAKEN", nav buttons
 (Dashboard/Cooling/LCD/Settings — checkable, exclusive), connection pill at bottom
 (green dot + "Kraken Elite" / red + "Disconnected"). QStackedWidget with the 4 pages.
 Status bar: last applied action (from `engine.applied`), errors (from `engine.error`, 5 s).
@@ -449,26 +449,26 @@ Tray: QSystemTrayIcon when `QSystemTrayIcon.isSystemTrayAvailable()` — menu: S
 profile quick-switch (Silent/Balanced/Performance → applies to BOTH channels), Quit.
 Tray icon updated with liquid temp每 sample (only re-render when integer °C changes).
 closeEvent: hide to tray if config.close_to_tray and tray active, else accept and
-`engine.stop()`. Window title "Kraken CAM". Set `make_app_icon()`.
+`engine.stop()`. Window title "OpenKraken". Set `make_app_icon()`.
 
-## krakencam/app.py + __main__.py
+## openkraken/app.py + __main__.py
 
 ```python
 def main(argv: list[str] | None = None) -> int
     # argparse: --minimized, --config PATH, --version, --debug (DEBUG logging)
     # logging.basicConfig (INFO default, format with time+module)
-    # QApplication, setApplicationName("kraken-cam") + setDesktopFileName("kraken-cam"),
+    # QApplication, setApplicationName("openkraken") + setDesktopFileName("openkraken"),
     # apply_theme, AppConfig.load, KrakenDevice, SystemSensors, ControlEngine(start()),
     # MainWindow (show unless minimized&&tray), aboutToQuit -> engine.stop(),
     # SIGINT handler (QTimer trick) for clean Ctrl-C, return app.exec()
-__main__.py: `from krakencam.app import main; raise SystemExit(main())`
+__main__.py: `from openkraken.app import main; raise SystemExit(main())`
 ```
 
 ## Packaging
 
-- `pyproject.toml`: project name `kraken-cam`, version 0.1.0, requires-python >=3.10,
+- `pyproject.toml`: project name `openkraken`, version 0.1.0, requires-python >=3.10,
   deps: `liquidctl>=1.15`, `Pillow>=9` (PyQt6 intentionally NOT a dep — provided by
-  system or venv extras `[gui]` with `PyQt6>=6.4`), `[project.scripts] kraken-cam = "krakencam.app:main"`.
+  system or venv extras `[gui]` with `PyQt6>=6.4`), `[project.scripts] openkraken = "openkraken.app:main"`.
 - `setup.sh` (bash, set -euo pipefail):
   1. cd to script dir; `python3 -m venv --system-site-packages .venv` (system-site so the
      distro PyQt6 is visible)
@@ -476,12 +476,12 @@ __main__.py: `from krakencam.app import main; raise SystemExit(main())`
   3. verify: `.venv/bin/python -c "from liquidctl.driver.kraken3 import KrakenZ3"` and grep
      `0x3012` in the installed kraken3.py — if missing, `pip install -U git+https://github.com/liquidctl/liquidctl`
   4. verify PyQt6 importable from venv, else `pip install PyQt6`
-  5. install `kraken-cam.desktop` to `~/.local/share/applications/` with Exec pointing at
-     `<projdir>/.venv/bin/kraken-cam`, Icon=`<projdir>/krakencam/resources/kraken-cam.svg`
+  5. install `openkraken.desktop` to `~/.local/share/applications/` with Exec pointing at
+     `<projdir>/.venv/bin/openkraken`, Icon=`<projdir>/openkraken/resources/openkraken.svg`
   6. print success + how to run. Idempotent.
-- `kraken-cam.desktop`: Name=Kraken CAM; Categories=System;Monitor; Terminal=false;
-  StartupWMClass=kraken-cam. setup.sh rewrites Exec/Icon paths via sed into the installed copy.
-- `krakencam/resources/kraken-cam.svg`: simple purple droplet on dark rounded square (hand-write the SVG).
+- `openkraken.desktop`: Name=OpenKraken; Categories=System;Monitor; Terminal=false;
+  StartupWMClass=openkraken. setup.sh rewrites Exec/Icon paths via sed into the installed copy.
+- `openkraken/resources/openkraken.svg`: simple purple droplet on dark rounded square (hand-write the SVG).
 - `README.md`: features, screenshot placeholder, install (`./setup.sh`), permissions note
   (plugdev/udev — this machine already OK), supported devices note, FAQ (RGB not supported
   upstream; LCD sensor mode refresh rate vs USB bandwidth), uninstall.
