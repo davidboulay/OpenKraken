@@ -44,6 +44,12 @@ rebooting into Windows.
     (multiple styles)
   - **Static images** and **animated GIFs**
   - Brightness, orientation (0/90/180/270°), and a software "off"
+- **RGB lighting** (off by default) for the 24-LED pump ring and the bundled
+  RGB Core fan chain: solid colours plus host-streamed Breathing / Color cycle /
+  Spectrum effects, with per-channel brightness. The wire protocol was
+  reverse-engineered by the community (liquidctl PR #882 / OpenRGB) since NZXT
+  ships no public spec; effects stream from the app at the device's ~1 frame/s
+  ceiling. See the [FAQ](#faq) for the caveats.
 - **System tray** with quick profile switching and close-to-tray.
 - **Persistent config** at `~/.config/kraken-cam/config.json`.
 
@@ -159,10 +165,31 @@ The non-LCD Kraken X-series and other NZXT coolers are out of scope (no screen).
 ## FAQ
 
 **Does it control the RGB lighting?**
-No. liquidctl currently exposes **no lighting protocol** for the 2023/2024
-Kraken generation (the driver's colour-channel map is empty), so Kraken CAM
-deliberately does not implement RGB. This will be revisited if/when upstream
-liquidctl adds support.
+Yes — but it's **off by default**, and you should know how it works first.
+Installed liquidctl exposes **no lighting protocol** for the 2023/2024 Kraken
+generation (the driver's colour-channel map is empty), so Kraken CAM speaks the
+HUE2 "Direct" wire protocol itself. That protocol was **reverse-engineered by
+the community** — credit to the unmerged [liquidctl PR #882](https://github.com/liquidctl/liquidctl/pull/882)
+(`feat/kraken-2024-elite-rgb`, tested on this exact device) and to the
+[OpenRGB](https://openrgb.org/) NZXT HUE2 controller and its device issues
+(#4828 / #4985). There is no official NZXT spec.
+
+What that means in practice:
+
+- **Enable it explicitly.** The Lighting page ships with "Control LEDs"
+  unchecked; until you turn it on, Kraken CAM never writes to the LEDs and your
+  existing (NZXT/firmware) lighting is left alone.
+- **Effects are streamed from the host at ~1 frame/s.** The device's firmware
+  rejects its own hardware animation modes for this generation and reliably
+  accepts Direct frames only at about **1 FPS**, so Breathing / Color cycle /
+  Spectrum are computed by the app and pushed one slow frame at a time. They are
+  designed as gentle drifts, not fast flashes, and they **stop when the app
+  closes** (a solid colour just stays as the last frame written).
+- **Brightness is applied host-side** (the device has no brightness command),
+  and **colours reset on an AC power-cycle** — reopen the app (or let it
+  autostart with "apply on start") to re-apply.
+- Covers the **24-LED pump ring** and the bundled **RGB Core fan** chain; ring
+  and fans can be synced or driven independently.
 
 **Why is the LCD sensor screen refresh so slow by default?**
 Each rendered frame is a full-resolution bitmap uploaded over USB — roughly

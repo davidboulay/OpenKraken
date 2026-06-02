@@ -65,6 +65,92 @@ _LBL_FIRMWARE = "firmware"
 _LBL_LCD_BRIGHTNESS = "brightness"
 _LBL_LCD_ORIENTATION = "orientation"
 
+# --------------------------------------------------------------------------- #
+# Native LED control (NZXT HUE2 "Direct" path).  Every byte layout below is
+# taken from the confirmed sections of PROTOCOL.md (§2 channel map, §3 init,
+# §4 direct write, §6 discovery) -- NOTHING from §7 (do-not-use) or §9 (FYI
+# hardware-effect tables).  All of it is encapsulated here; nothing byte-level
+# leaks above device.py.
+# --------------------------------------------------------------------------- #
+
+#: App lighting channel name -> wire mask written into HID byte ``0x02``
+#: (PROTOCOL.md §2: ring = channel 0 = mask ``1<<0``, fans = channel 1 = ``1<<1``).
+LIGHTING_CHANNELS: dict[str, int] = {"ring": 0x01, "fans": 0x02}
+
+#: HID report length for the lighting (HUE2) path; right-zero-padded (PROTOCOL.md
+#: §3 / kraken3.py ``_WRITE_LENGTH``/``_READ_LENGTH``).
+_LIGHTING_REPORT_LENGTH = 64
+
+#: Reads to attempt while waiting for the ``0x21 0x03`` lighting-info reply
+#: (mirrors kraken3.py ``_MAX_READ_ATTEMPTS``).
+_LIGHTING_MAX_READ_ATTEMPTS = 12
+
+#: Bytes per LED on the wire: one G, R, B triplet (PROTOCOL.md §4).
+_BYTES_PER_LED = 3
+
+#: First report (``0x22 0x10``) carries up to 20 LEDs = 60 colour bytes; the rest
+#: spill into the ``0x22 0x11`` continuation (PROTOCOL.md §4, Quirk A workaround).
+_LEDS_PER_PACKET = 20
+_COLOR_BYTES_PER_PACKET = _LEDS_PER_PACKET * _BYTES_PER_LED  # 60
+
+#: Discovery: ``0x20 0x03`` request and its ``0x21 0x03`` reply prefix
+#: (PROTOCOL.md §3 step 2 / §6).
+_LIGHTING_INFO_REQUEST = [0x20, 0x03]
+_LIGHTING_INFO_REPLY_PREFIX = (0x21, 0x03)
+
+#: ``0x20 0x03`` reply layout (PROTOCOL.md §6): channel count at byte 14,
+#: accessory ids start at byte 15 with a stride of 6 slots per channel.
+_LIGHTING_INFO_CHANNEL_COUNT_OFFSET = 14
+_LIGHTING_INFO_ACCESSORY_OFFSET = 15
+_HUE2_MAX_ACCESSORIES_IN_CHANNEL = 6
+
+#: Accessory id -> LED count, using the OpenRGB-authoritative counts called out
+#: in PROTOCOL.md §6 (the installed liquidctl enum does NOT name 0x1E / 0x18, so
+#: we keep our own table rather than relying on it).  Unknown ids fall back to
+#: ``_FALLBACK_ACCESSORY_LEDS`` with a log line.
+_ACCESSORY_LED_COUNTS: dict[int, int] = {
+    0x1E: 24,  # Kraken 2024 Elite Pump Ring
+    0x17: 8,   # F140 RGB Core (per-fan)
+    0x18: 8,   # F120 RGB Core (per-fan)
+    0x1B: 24,  # RGB Core radiator-kit aggregate (HW-CONFIRMED 2026-06-02: our unit
+    #            reports a single 0x1B on the fan channel; 24-LED frames light the
+    #            entire chain — see PROTOCOL.md §11)
+    0x1D: 24,  # F360 RGB Core (radiator-kit aggregate)
+}
+_FALLBACK_ACCESSORY_LEDS = 8
+
+#: Fallback LED counts when ``query_lighting_info()`` never succeeded
+#: (PROTOCOL.md §11: our unit reports ring 24 / fans 24).
+_FALLBACK_LED_COUNTS: dict[str, int] = {"ring": 24, "fans": 24}
+
+#: Apply-packet (``0x22 0xA0``) byte-7 variants (PROTOCOL.md §4 + §11):
+#: index 0 = OpenRGB (0x28) — HW-CONFIRMED on our unit 2026-06-02 (full ring and
+#: fan chain lit first try; variant 1 never needed).  Index 1 = liquidctl
+#: super-fixed (0x08), kept only for the probe's A/B path.  The only difference
+#: between the two 16-byte templates is this byte.
+_APPLY_VARIANTS: tuple[tuple[int, ...], ...] = (
+    # OpenRGB SendApply (verbatim): byte 0x07 = 0x28.  DEFAULT.
+    (0x22, 0xA0, 0x00, 0x00, 0x01, 0x00, 0x00, 0x28, 0x00, 0x00, 0x80, 0x00, 0x32, 0x00, 0x00, 0x01),
+    # liquidctl super-fixed apply: byte 0x07 = 0x08.
+    (0x22, 0xA0, 0x00, 0x00, 0x01, 0x00, 0x00, 0x08, 0x00, 0x00, 0x80, 0x00, 0x32, 0x00, 0x00, 0x01),
+)
+#: Byte index of the channel mask inside an apply template.
+_APPLY_MASK_OFFSET = 2
+
+
+@dataclass
+class LightingInfo:
+    """Parsed ``0x20 0x03`` lighting/accessory reply (PROTOCOL.md §6).
+
+    ``accessories`` maps each app channel name to the list of non-zero accessory
+    ids found in that channel's slots; ``led_counts`` maps each channel name to
+    the summed LED count (ring is expected to report 24).
+    """
+
+    channel_count: int
+    accessories: dict[str, list[int]]
+    led_counts: dict[str, int]
+
 
 @dataclass
 class DeviceStatus:
@@ -118,6 +204,14 @@ class KrakenDevice:
         self.firmware_version: str = ""
         self.lcd_brightness: int = 50
         self.lcd_orientation: int = 0
+        #: Parsed lighting/accessory info; ``None`` until a successful
+        #: :meth:`query_lighting_info` (which is best-effort during connect()).
+        self.lighting_info: LightingInfo | None = None
+        #: Raw bytes of the most recent ``0x21 0x03`` lighting-info reply, kept
+        #: verbatim so the hardware probe can hex-dump it for PROTOCOL.md §10.3
+        #: (no raw dump from a real 3012 exists yet).  ``None`` until a reply with
+        #: the ``0x21 0x03`` prefix has been read.
+        self.last_lighting_reply: list[int] | None = None
 
     # --------------------------------------------------------------- discovery
     def connect(self) -> bool:
@@ -195,7 +289,17 @@ class KrakenDevice:
                 self.lcd_brightness,
                 self.lcd_orientation,
             )
-            return True
+
+            # Best-effort lighting discovery (PROTOCOL.md §3 step 2 / §6).  A
+            # failure here must NOT fail the connection: lighting is optional and
+            # callers fall back to the default LED counts.  ``query_lighting_info``
+            # re-enters the RLock (re-entrant), never raises, and -- crucially --
+            # never tears down the connection on its own I/O error (a genuine
+            # disconnect is caught by the next get_status).  We still return the
+            # live ``_connected`` flag rather than a bare ``True`` so the result is
+            # always honest about the connection state.
+            self.query_lighting_info()
+            return self._connected
 
     def disconnect(self) -> None:
         """Disconnect from the device if connected.  Always safe to call."""
@@ -316,6 +420,210 @@ class KrakenDevice:
     def set_lcd_gif(self, gif_path: str) -> bool:
         """Upload an animated GIF to the LCD (blocking)."""
         return self._set_screen("gif", str(gif_path))
+
+    # ------------------------------------------------------------ LED lighting
+    def query_lighting_info(self) -> LightingInfo | None:
+        """Discover per-channel LED accessories (PROTOCOL.md §3 step 2 / §6).
+
+        Writes the ``0x20 0x03`` lighting-info request and reads 64-byte reports
+        until one prefixed ``0x21 0x03`` arrives, then parses the channel count
+        (byte 14) and the per-channel accessory ids (byte 15 onward, stride 6)
+        into a :class:`LightingInfo`.  Each non-zero accessory id is mapped to an
+        LED count via :data:`_ACCESSORY_LED_COUNTS` (unknown ids log a warning and
+        count as :data:`_FALLBACK_ACCESSORY_LEDS`), summed per channel.
+
+        Stores the result in :attr:`lighting_info` and returns it.  This is
+        **best-effort**: any failure (not connected, I/O error, malformed reply)
+        is logged and returns ``None`` with :attr:`lighting_info` left unchanged
+        from a previous success (or ``None``); callers fall back to
+        :data:`_FALLBACK_LED_COUNTS` (ring 24, fans 16).  A genuine I/O error
+        marks the device disconnected so the engine can reconnect.
+        """
+        with self._lock:
+            if self._dev is None or not self._connected:
+                logger.warning("query_lighting_info: device not connected")
+                return None
+            try:
+                # Clear stale reports before the request/reply exchange, exactly
+                # as kraken3.py does around its own request reads.
+                self._dev.device.clear_enqueued_reports()
+                self._lighting_write(_LIGHTING_INFO_REQUEST)
+                reply = self._lighting_read_until(_LIGHTING_INFO_REPLY_PREFIX)
+            except Exception:
+                # Discovery is best-effort and explicitly non-fatal
+                # (INTERFACES-LIGHTING.md): an I/O error here must NOT tear down
+                # the connection -- doing so would make connect()'s best-effort
+                # discovery call report a healthy device as disconnected, and the
+                # engine would emit connection_changed(True) then silently skip
+                # every apply.  Log it, leave ``lighting_info`` unchanged, and keep
+                # the connection; a genuine disconnect is caught by the next
+                # control/telemetry call (get_status / write_lighting_frame).
+                logger.exception(
+                    "query_lighting_info() I/O failed; keeping connection, "
+                    "falling back to default LED counts"
+                )
+                return None
+
+            if reply is None:
+                logger.warning(
+                    "query_lighting_info: no %02x %02x reply within %d reads; "
+                    "falling back to default LED counts",
+                    _LIGHTING_INFO_REPLY_PREFIX[0],
+                    _LIGHTING_INFO_REPLY_PREFIX[1],
+                    _LIGHTING_MAX_READ_ATTEMPTS,
+                )
+                return None
+
+            # Keep the verbatim wire bytes for the §10.3 hardware-probe hex dump
+            # (retained even if parsing below fails, so a malformed reply can
+            # still be inspected).
+            self.last_lighting_reply = list(reply)
+
+            info = _parse_lighting_info(reply)
+            if info is None:
+                # Malformed/short reply: validation problem, not an I/O fault --
+                # do NOT disconnect.
+                return None
+
+            self.lighting_info = info
+            logger.info(
+                "Lighting info: %d channel(s); LED counts %s; accessories %s",
+                info.channel_count,
+                info.led_counts,
+                info.accessories,
+            )
+            return info
+
+    def led_count_for(self, channel: str) -> int:
+        """Return the detected LED count for ``channel`` (else the fallback).
+
+        Uses :attr:`lighting_info` when available, otherwise the conservative
+        defaults from PROTOCOL.md §6 (ring 24, fans 16).
+        """
+        info = self.lighting_info
+        if info is not None and channel in info.led_counts:
+            return info.led_counts[channel]
+        return _FALLBACK_LED_COUNTS.get(channel, _FALLBACK_ACCESSORY_LEDS)
+
+    def write_lighting_frame(
+        self,
+        channel: str,
+        led_colors: list[tuple[int, int, int]],
+        apply_variant: int = 0,
+    ) -> bool:
+        """Write one full per-LED Direct frame to ``channel`` (PROTOCOL.md §4).
+
+        This is the **only** lighting write path.  ``led_colors`` is a list of
+        ``(r, g, b)`` triplets (0-255, already brightness-scaled host-side by the
+        effect engine -- the device has no brightness command).  Each triplet is
+        converted to the device's **GRB** wire order, then sent as:
+
+        * packet ``0x22 0x10`` carrying LEDs 0-19 (``leds[0:60]``);
+        * packet ``0x22 0x11`` carrying LEDs 20-39 (``leds[60:]``) -- sent **only
+          when the LED count exceeds 20** (Quirk A workaround: the 24-LED ring
+          needs it, a <=20-LED chain does not);
+        * the apply/commit packet ``0x22 0xA0`` (``_APPLY_VARIANTS[apply_variant]``,
+          default index 0 = OpenRGB byte-7 ``0x28``).
+
+        Returns ``True`` on success, ``False`` (logged) on failure.  An I/O error
+        marks the device disconnected so the engine can reconnect.  ``channel``
+        must be a key of :data:`LIGHTING_CHANNELS`.
+        """
+        mask = LIGHTING_CHANNELS.get(channel)
+        if mask is None:
+            logger.warning(
+                "write_lighting_frame: unknown channel %r (valid: %s)",
+                channel,
+                ", ".join(LIGHTING_CHANNELS),
+            )
+            return False
+
+        if apply_variant < 0 or apply_variant >= len(_APPLY_VARIANTS):
+            logger.warning(
+                "write_lighting_frame: apply_variant %r out of range; using 0",
+                apply_variant,
+            )
+            apply_variant = 0
+
+        # RGB -> GRB on the wire (PROTOCOL.md §4), clamped defensively.  Flatten
+        # to a single byte list: [g0, r0, b0, g1, r1, b1, ...].
+        color_bytes: list[int] = []
+        for color in led_colors:
+            try:
+                r, g, b = color[0], color[1], color[2]
+            except (TypeError, IndexError, ValueError):
+                logger.warning("write_lighting_frame: skipping malformed colour %r", color)
+                continue
+            color_bytes.append(_clamp(int(g), 0, 255))
+            color_bytes.append(_clamp(int(r), 0, 255))
+            color_bytes.append(_clamp(int(b), 0, 255))
+
+        led_count = len(color_bytes) // _BYTES_PER_LED
+
+        # Packet 1: LEDs 0-19 (first 60 colour bytes).  Packet 2 (continuation)
+        # is sent ONLY when there are more than 20 LEDs (Quirk A).
+        packet1 = [0x22, 0x10, mask, 0x00] + color_bytes[:_COLOR_BYTES_PER_PACKET]
+        packet2: list[int] | None = None
+        if led_count > _LEDS_PER_PACKET:
+            packet2 = [0x22, 0x11, mask, 0x00] + color_bytes[_COLOR_BYTES_PER_PACKET:]
+
+        apply_packet = list(_APPLY_VARIANTS[apply_variant])
+        apply_packet[_APPLY_MASK_OFFSET] = mask
+
+        with self._lock:
+            if self._dev is None or not self._connected:
+                logger.warning("write_lighting_frame(%s): device not connected", channel)
+                return False
+            try:
+                self._lighting_write(packet1)
+                if packet2 is not None:
+                    self._lighting_write(packet2)
+                self._lighting_write(apply_packet)
+                return True
+            except Exception:
+                logger.exception(
+                    "write_lighting_frame(%s, %d LEDs) failed; marking disconnected",
+                    channel,
+                    led_count,
+                )
+                self._mark_disconnected()
+                return False
+
+    def _lighting_write(self, data: list[int]) -> None:
+        """Send one HID OUT report through the driver's HID handle.
+
+        Mirrors kraken3.py ``_write``: right-zero-pad ``data`` to the 64-byte
+        report length and hand the list to the underlying hidapi handle
+        (``self._dev.device.write``).  Caller must hold the lock; raises on I/O
+        error (handled by the caller).
+        """
+        if len(data) > _LIGHTING_REPORT_LENGTH:
+            # Defensive: never over-length a report (would corrupt framing).
+            logger.warning(
+                "lighting report of %d bytes truncated to %d",
+                len(data),
+                _LIGHTING_REPORT_LENGTH,
+            )
+            data = data[:_LIGHTING_REPORT_LENGTH]
+        padding = [0x00] * (_LIGHTING_REPORT_LENGTH - len(data))
+        self._dev.device.write(data + padding)
+
+    def _lighting_read_until(
+        self, prefix: tuple[int, int]
+    ) -> list[int] | None:
+        """Read 64-byte IN reports until one starts with ``prefix``.
+
+        Mirrors kraken3.py ``_read``/``_read_until`` semantics: read up to
+        :data:`_LIGHTING_MAX_READ_ATTEMPTS` reports and return the first whose
+        first two bytes match ``prefix``; return ``None`` if none matched (the
+        caller treats that as a non-fatal miss, NOT an I/O error).  Caller holds
+        the lock; raises only on a genuine read I/O error.
+        """
+        for _ in range(_LIGHTING_MAX_READ_ATTEMPTS):
+            msg = list(self._dev.device.read(_LIGHTING_REPORT_LENGTH))
+            if len(msg) >= 2 and msg[0] == prefix[0] and msg[1] == prefix[1]:
+                return msg
+        return None
 
     # ----------------------------------------------------------------- helpers
     def _set_screen(self, mode: str, value: Any) -> bool:
@@ -507,3 +815,80 @@ def _get_str(parsed: list[tuple[str, Any]], fragment: str) -> str | None:
 def _clamp(value: int, low: int, high: int) -> int:
     """Clamp ``value`` to the inclusive range ``[low, high]``."""
     return max(low, min(high, value))
+
+
+def _parse_lighting_info(reply: list[int]) -> LightingInfo | None:
+    """Parse a ``0x21 0x03`` reply into :class:`LightingInfo` (PROTOCOL.md §6).
+
+    Layout: channel count at byte 14; accessory ids start at byte 15 with a
+    stride of :data:`_HUE2_MAX_ACCESSORIES_IN_CHANNEL` (6) slots per channel
+    (slot value 0 = empty).  We map our two known app channels (``ring`` =
+    channel index 0, ``fans`` = channel index 1) onto their slots, regardless of
+    the reported ``channel_count`` (which on this device is 2 -- see Quirk B; we
+    deliberately model both channels rather than asserting equality).
+
+    Each non-zero accessory id is looked up in :data:`_ACCESSORY_LED_COUNTS`
+    (unknown ids -> :data:`_FALLBACK_ACCESSORY_LEDS` with a warning) and summed
+    per channel.  Returns ``None`` (logged) for a reply too short to parse.
+    """
+    # Channel-name -> channel index (PROTOCOL.md §2).
+    channel_indices = {"ring": 0, "fans": 1}
+
+    # Need to reach the last slot of the highest channel index we read.
+    max_index = max(channel_indices.values())
+    min_len = (
+        _LIGHTING_INFO_ACCESSORY_OFFSET
+        + max_index * _HUE2_MAX_ACCESSORIES_IN_CHANNEL
+        + _HUE2_MAX_ACCESSORIES_IN_CHANNEL
+    )
+    if not reply or len(reply) <= _LIGHTING_INFO_CHANNEL_COUNT_OFFSET:
+        logger.warning(
+            "Lighting-info reply too short (%d bytes); cannot parse",
+            len(reply) if reply else 0,
+        )
+        return None
+
+    channel_count = int(reply[_LIGHTING_INFO_CHANNEL_COUNT_OFFSET])
+
+    accessories: dict[str, list[int]] = {}
+    led_counts: dict[str, int] = {}
+    for name, ch_index in channel_indices.items():
+        ids: list[int] = []
+        total = 0
+        base = _LIGHTING_INFO_ACCESSORY_OFFSET + ch_index * _HUE2_MAX_ACCESSORIES_IN_CHANNEL
+        for slot in range(_HUE2_MAX_ACCESSORIES_IN_CHANNEL):
+            idx = base + slot
+            if idx >= len(reply):
+                break
+            acc_id = int(reply[idx])
+            if acc_id == 0:
+                continue
+            ids.append(acc_id)
+            count = _ACCESSORY_LED_COUNTS.get(acc_id)
+            if count is None:
+                logger.warning(
+                    "Unknown lighting accessory id 0x%02X on channel %r; assuming %d LEDs",
+                    acc_id,
+                    name,
+                    _FALLBACK_ACCESSORY_LEDS,
+                )
+                count = _FALLBACK_ACCESSORY_LEDS
+            total += count
+        accessories[name] = ids
+        # Fall back to the conservative default when a channel reports nothing
+        # (e.g. a short reply that didn't include this channel's slots).
+        led_counts[name] = total if total > 0 else _FALLBACK_LED_COUNTS.get(name, 0)
+
+    if len(reply) < min_len:
+        logger.warning(
+            "Lighting-info reply length %d shorter than expected %d; "
+            "parsed what was present, channels may be incomplete",
+            len(reply),
+            min_len,
+        )
+
+    return LightingInfo(
+        channel_count=channel_count,
+        accessories=accessories,
+        led_counts=led_counts,
+    )

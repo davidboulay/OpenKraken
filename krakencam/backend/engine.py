@@ -36,9 +36,9 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 from krakencam.backend import curves
 from krakencam.backend import lcd_render
+from krakencam.backend import lighting_fx
 from krakencam.backend.device import DeviceStatus, KrakenDevice
-from krakencam.backend.sensors import SystemSensors, SystemSnapshot
-from krakencam.config import AppConfig, ChannelConfig, LcdConfig
+from krakencam.config import AppConfig, ChannelConfig, LcdConfig, LightingChannelConfig, LightingConfig
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -58,6 +58,19 @@ _STOP_TIMEOUT: float = 5.0
 
 # Speed channels managed by the engine.
 _CHANNELS: tuple[str, ...] = ("pump", "fan")
+
+# RGB lighting channels managed by the engine (names match config / device masks).
+_LIGHTING_CHANNELS: tuple[str, ...] = ("ring", "fans")
+
+# Minimum interval between successive lighting frame writes for an animated mode,
+# in seconds.  The device only reliably accepts ~1 update/sec (PROTOCOL.md §5), so
+# we never stream faster than this regardless of poll_interval.
+_LIGHTING_MIN_WRITE_INTERVAL: float = 1.0
+
+# Fallback per-channel LED counts used until ``device.lighting_info`` is populated
+# (PROTOCOL.md §2 / INTERFACES-LIGHTING.md): the 2024 Elite ring is 24 LEDs and a
+# typical RGB Core fan chain is 16 (2 x 8-LED fans).
+_LIGHTING_FALLBACK_LEDS: dict[str, int] = {"ring": 24, "fans": 16}
 
 
 @dataclass
@@ -80,6 +93,62 @@ class _ChannelState:
     software: bool = False
     # Set once we have emitted the "sensor missing" error so we do not spam it.
     failsafe_active: bool = False
+
+
+@dataclass
+class _LightingState:
+    """Per-channel runtime state for an RGB lighting channel (``ring``/``fans``).
+
+    Captures the effect parameters applied to this channel plus the bookkeeping the
+    run loop needs to stream animated frames at ~1 FPS:
+
+    * ``animated`` -- whether the active ``mode`` is a host-streamed animation
+      (from :data:`lighting_fx.MODES`).  Non-animated modes are written once at
+      apply time and never touched again by the loop.
+    * ``origin`` -- ``time.monotonic()`` captured when the mode was (re)applied; the
+      elapsed time ``t = now - origin`` is fed to :func:`lighting_fx.frame`.
+    * ``last_write`` -- monotonic timestamp of the last animated frame written, so
+      the loop honours :data:`_LIGHTING_MIN_WRITE_INTERVAL` (the device's ~1 FPS
+      ceiling) regardless of ``poll_interval``.
+    """
+
+    mode: str = "off"
+    colors: list[tuple[int, int, int]] | None = None
+    brightness: int = 100
+    speed: str = "normal"
+    animated: bool = False
+    origin: float = 0.0
+    last_write: float = 0.0
+
+
+def _copy_lighting_channel(cfg: LightingChannelConfig) -> LightingChannelConfig:
+    """Deep-copy a :class:`LightingChannelConfig` (colours copied as fresh tuples).
+
+    Used to snapshot a GUI-owned config when queuing :meth:`ControlEngine.apply_lighting`
+    so later GUI mutation cannot race the engine thread.
+    """
+    return LightingChannelConfig(
+        mode=cfg.mode,
+        colors=[tuple(c) for c in cfg.colors],
+        brightness=cfg.brightness,
+        speed=cfg.speed,
+    )
+
+
+def _speed_time_warp(speed: str) -> float:
+    """Time-warp factor for an animation ``speed`` ("slow"/"normal"/"fast").
+
+    Returns ``normal_period / speed_period`` from :data:`lighting_fx.SPEED_PERIODS`,
+    so multiplying elapsed time by it makes a faster speed advance the effect phase
+    proportionally faster.  Unknown speeds (or a missing/zero "normal" reference)
+    fall back to ``1.0`` so a bad config never breaks the time axis.
+    """
+    periods = lighting_fx.SPEED_PERIODS
+    normal = periods.get("normal")
+    this = periods.get(speed)
+    if not normal or not this:
+        return 1.0
+    return float(normal) / float(this)
 
 
 class HistoryBuffers:
@@ -206,6 +275,13 @@ class ControlEngine(QThread):
             channel: _ChannelState() for channel in _CHANNELS
         }
 
+        # Per-channel runtime state for RGB lighting.  ``_lighting_cfg`` mirrors the
+        # last-applied LightingConfig so reconnects re-apply the latest settings.
+        self._lighting: dict[str, _LightingState] = {
+            channel: _LightingState() for channel in _LIGHTING_CHANNELS
+        }
+        self._lighting_cfg: LightingConfig = config.lighting
+
         # Last connection state we emitted, so connection_changed only fires on
         # transitions.  None means "not yet emitted".
         self._last_connected: bool | None = None
@@ -278,6 +354,20 @@ class ControlEngine(QThread):
         )
         self._requests.put(lambda: self._do_apply_lcd(snapshot))
 
+    def apply_lighting(self, cfg: LightingConfig) -> None:
+        """Request that RGB lighting be (re)configured from ``cfg``.
+
+        Thread-safe: enqueues the work onto the engine loop.  A deep snapshot of
+        ``cfg`` is taken so later GUI mutation cannot race the engine thread.
+        """
+        snapshot = LightingConfig(
+            enabled=cfg.enabled,
+            sync=cfg.sync,
+            ring=_copy_lighting_channel(cfg.ring),
+            fans=_copy_lighting_channel(cfg.fans),
+        )
+        self._requests.put(lambda: self._do_apply_lighting(snapshot))
+
     def request_reconnect(self) -> None:
         """Request an immediate reconnection attempt.
 
@@ -331,7 +421,10 @@ class ControlEngine(QThread):
                 # 4. Push an LCD sensor frame if due.
                 self._tick_lcd_sensors(status, snap)
 
-                # 5. Drain queued GUI requests.
+                # 5. Stream an animated lighting frame if due (~1 FPS ceiling).
+                self._tick_lighting()
+
+                # 6. Drain queued GUI requests.
                 self._drain_requests()
 
                 # Sleep the remainder of poll_interval in small slices.
@@ -369,6 +462,10 @@ class ControlEngine(QThread):
         self._do_apply_channel("pump", self._config.pump)
         self._do_apply_channel("fan", self._config.fan)
         self._do_apply_lcd(self._lcd_cfg)
+        # Re-apply RGB lighting only when the user has enabled control; when
+        # disabled we must never touch the LEDs (INTERFACES-LIGHTING.md).
+        if self._lighting_cfg.enabled:
+            self._do_apply_lighting(self._lighting_cfg)
 
     # ------------------------------------------------------------------ #
     # Loop step 1: reconnection.
@@ -527,7 +624,83 @@ class ControlEngine(QThread):
             self._emit_connection(self._device.is_connected)
 
     # ------------------------------------------------------------------ #
-    # Loop step 5: request draining.
+    # Loop step 5: RGB lighting frame streaming.
+    # ------------------------------------------------------------------ #
+    def _tick_lighting(self) -> None:
+        """Stream one animated lighting frame per due channel (~1 FPS ceiling).
+
+        Non-animated modes (off/fixed) were written once at apply time and are not
+        touched here.  Animated channels write a fresh :func:`lighting_fx.frame` at
+        most once per :data:`_LIGHTING_MIN_WRITE_INTERVAL`.  Nothing is written when
+        lighting is disabled or the device is disconnected (PROTOCOL.md §5 /
+        INTERFACES-LIGHTING.md).
+        """
+        if not self._lighting_cfg.enabled:
+            return
+        if not self._device.is_connected:
+            return
+        now = time.monotonic()
+        for channel, state in self._lighting.items():
+            if not state.animated:
+                continue
+            if now - state.last_write < _LIGHTING_MIN_WRITE_INTERVAL:
+                continue
+            # _write_lighting_frame advances state.last_write on success, so a
+            # failed write does not consume the slot and the next tick can retry.
+            self._write_lighting_frame(channel, state, now)
+
+    def _write_lighting_frame(
+        self, channel: str, state: _LightingState, now: float
+    ) -> bool:
+        """Compute and write one frame for ``channel`` from ``state`` at time ``now``.
+
+        Returns ``True`` on a successful device write.  Frame computation failures
+        are caught (they must never crash the loop); a write failure reflects any
+        resulting disconnect transition, mirroring the other loop steps.
+        """
+        led_count = self._lighting_led_count(channel)
+        # ``lighting_fx.frame`` takes no speed argument: it advances effects on a
+        # "normal"-speed time axis.  We encode the per-channel speed by warping the
+        # elapsed time so a "fast" channel advances its phase proportionally faster
+        # (and "slow" proportionally slower) -- SPEED_PERIODS maps speed -> seconds
+        # per cycle, so the warp factor is normal_period / this_speed_period.
+        elapsed = max(0.0, now - state.origin) * _speed_time_warp(state.speed)
+        colors = state.colors if state.colors is not None else []
+        try:
+            frame = lighting_fx.frame(
+                state.mode, colors, state.brightness, led_count, elapsed
+            )
+        except Exception:  # pragma: no cover - effect math must not crash the loop
+            _LOGGER.exception("failed to compute lighting frame for %s", channel)
+            return False
+        if not self._device.write_lighting_frame(channel, frame):
+            _LOGGER.warning("failed to write lighting frame for %s", channel)
+            self._emit_connection(self._device.is_connected)
+            return False
+        # Record the time of this successful write so the next streamed frame is
+        # spaced a full _LIGHTING_MIN_WRITE_INTERVAL after it.  This covers BOTH
+        # the apply-time first frame (_do_apply_lighting) and steady-state ticks;
+        # without it the apply-time frame leaves last_write at its 0.0 sentinel and
+        # the very next tick would fire immediately (<1 s later when poll_interval
+        # < 1 s), breaching the device's ~1 FPS ceiling (PROTOCOL.md §5).
+        state.last_write = now
+        return True
+
+    def _lighting_led_count(self, channel: str) -> int:
+        """LED count for ``channel`` from ``device.lighting_info`` or the fallback.
+
+        Falls back to ring=24 / fans=16 (PROTOCOL.md §2) until the device has
+        successfully parsed its ``0x20 0x03`` accessory reply.
+        """
+        info = getattr(self._device, "lighting_info", None)
+        if info is not None:
+            count = info.led_counts.get(channel)
+            if isinstance(count, int) and count > 0:
+                return count
+        return _LIGHTING_FALLBACK_LEDS.get(channel, 16)
+
+    # ------------------------------------------------------------------ #
+    # Loop step 6: request draining.
     # ------------------------------------------------------------------ #
     def _drain_requests(self) -> None:
         """Execute all queued GUI requests (non-blocking)."""
@@ -731,6 +904,82 @@ class ControlEngine(QThread):
             self.error.emit(f"Failed to apply {what}: {detail}")
             # An I/O failure marks the device disconnected; reflect any transition.
             self._emit_connection(self._device.is_connected)
+
+    def _do_apply_lighting(self, cfg: LightingConfig) -> None:
+        """Apply an RGB lighting config on the engine thread.
+
+        * When ``cfg.sync`` the ``ring`` channel config drives **both** channels;
+          otherwise each channel uses its own config.
+        * Each channel's runtime state is refreshed (mode/colors/brightness/speed)
+          and its animation origin reset to ``time.monotonic()`` so animated effects
+          restart cleanly on every (re)apply.
+        * Non-animated modes (off/fixed) are written **once**, now.  Animated modes
+          write their first frame now and are then streamed by :meth:`_tick_lighting`
+          at the ~1 FPS device ceiling.
+        * Nothing is written while lighting is disabled or the device is
+          disconnected; the captured state is still kept so the loop / a later
+          reconnect can resume from it.
+        """
+        # Mirror into the engine's view so reconnect re-applies the latest request.
+        self._lighting_cfg = cfg
+        self._config.lighting = cfg
+
+        now = time.monotonic()
+        for channel in _LIGHTING_CHANNELS:
+            source = cfg.ring if cfg.sync else getattr(cfg, channel)
+            self._load_lighting_state(channel, source, now)
+
+        if not cfg.enabled:
+            # User has disabled control: never touch the LEDs.  We still recorded
+            # the desired state above so re-enabling (or a future reconnect with the
+            # config enabled) starts from the right place.
+            _LOGGER.info("lighting disabled; not writing LEDs")
+            self.applied.emit("lighting", "disabled")
+            return
+
+        if not self._device.is_connected:
+            _LOGGER.debug("apply_lighting deferred: device disconnected")
+            return
+
+        # Write the initial frame for every channel (animated channels are then
+        # streamed by the loop; static channels are done after this single write).
+        details: list[str] = []
+        all_ok = True
+        for channel in _LIGHTING_CHANNELS:
+            state = self._lighting[channel]
+            ok = self._write_lighting_frame(channel, state, now)
+            all_ok = all_ok and ok
+            details.append(f"{channel}: {state.mode}")
+
+        detail = ", ".join(details)
+        if cfg.sync:
+            detail = f"sync {self._lighting['ring'].mode} ({detail})"
+        self._emit_apply_result("lighting", detail, all_ok)
+
+    def _load_lighting_state(
+        self, channel: str, source: LightingChannelConfig, now: float
+    ) -> None:
+        """Refresh ``channel``'s runtime lighting state from ``source``.
+
+        Resets the animation origin to ``now`` and arms the next animated write so
+        the first frame is emitted immediately by the caller / next tick.
+        """
+        spec = lighting_fx.MODES.get(source.mode)
+        animated = bool(spec.animated) if spec is not None else False
+        state = self._lighting[channel]
+        state.mode = source.mode
+        state.colors = [tuple(c) for c in source.colors]
+        state.brightness = source.brightness
+        state.speed = source.speed
+        state.animated = animated
+        state.origin = now
+        # Arm the next animated write with a past sentinel so that if the apply
+        # path is deferred (device disconnected) the first tick after a reconnect
+        # fires immediately.  When the apply path DOES write the first frame,
+        # _write_lighting_frame overwrites this with the real write time, so the
+        # next streamed frame is spaced a full _LIGHTING_MIN_WRITE_INTERVAL later
+        # (the device's ~1 FPS ceiling, PROTOCOL.md §5) rather than ~poll_interval.
+        state.last_write = 0.0
 
     def _do_request_reconnect(self) -> None:
         """Force an immediate reconnection attempt (resets the backoff timer)."""

@@ -41,6 +41,7 @@ from krakencam.gui import theme
 from krakencam.gui.pages.cooling import CoolingPage
 from krakencam.gui.pages.dashboard import DashboardPage
 from krakencam.gui.pages.lcd import LcdPage
+from krakencam.gui.pages.lighting import LightingPage
 from krakencam.gui.pages.settings import SettingsPage
 
 _LOGGER = logging.getLogger(__name__)
@@ -56,6 +57,7 @@ _MIN_SIZE = (920, 640)
 _NAV_ITEMS = (
     ("Dashboard", "_dashboard"),
     ("Cooling", "_cooling"),
+    ("Lighting", "_lighting"),
     ("LCD", "_lcd"),
     ("Settings", "_settings"),
 )
@@ -165,6 +167,7 @@ class MainWindow(QMainWindow):
 
         self._dashboard = DashboardPage(self._engine, self._config)
         self._cooling = CoolingPage(self._engine, self._config)
+        self._lighting = LightingPage(self._engine, self._config)
         self._lcd = LcdPage(self._engine, self._config)
         self._settings = SettingsPage(self._engine, self._config)
 

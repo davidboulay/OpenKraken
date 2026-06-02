@@ -34,6 +34,21 @@ DEFAULT_CONFIG_PATH: Path = DEFAULT_CONFIG_DIR / "config.json"
 MEDIA_DIR: Path = DEFAULT_CONFIG_DIR / "media"
 
 
+#: Fallback lighting mode when an on-disk mode is unknown / unparsable.  The
+#: authoritative set of modes lives in :mod:`krakencam.backend.lighting_fx`
+#: (``MODES``); we validate against it tolerantly when importable and otherwise
+#: only fall back on a non-string value (see :func:`_normalize_lighting_mode`).
+_LIGHTING_DEFAULT_MODE: str = "fixed"
+
+#: Default lighting colour (NZXT purple ``#7c3aed`` -> ``(124, 58, 237)``).
+_LIGHTING_DEFAULT_COLOR: tuple[int, int, int] = (124, 58, 237)
+
+
+def _default_lighting_colors() -> list[tuple[int, int, int]]:
+    """Default lighting colour list (a single NZXT-purple swatch)."""
+    return [_LIGHTING_DEFAULT_COLOR]
+
+
 def _default_pump_points() -> list[tuple[float, int]]:
     """Default pump curve points (balanced preset, liquid-temp keyed)."""
     return [(20.0, 50), (33.0, 60), (40.0, 75), (46.0, 90), (50.0, 100)]
@@ -146,6 +161,119 @@ class LcdConfig:
 
 
 @dataclass
+class LightingChannelConfig:
+    """Lighting configuration for a single RGB channel (``ring`` or ``fans``).
+
+    ``mode`` is a key into :data:`krakencam.backend.lighting_fx.MODES`.  ``colors``
+    is a list of ``(r, g, b)`` triplets (each component 0-255); the count the
+    device actually uses is clamped to the active mode's min/max by the effect
+    engine, not here.  ``brightness`` (0-100) is applied **host-side** — the device
+    has no brightness command.  ``speed`` selects the animation step rate.
+    """
+
+    mode: str = _LIGHTING_DEFAULT_MODE  # key into lighting_fx.MODES
+    colors: list[tuple[int, int, int]] = field(default_factory=_default_lighting_colors)
+    brightness: int = 100  # 0-100, applied host-side
+    speed: str = "normal"  # "slow" | "normal" | "fast"
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable mapping (colours become lists of 3 ints)."""
+        return {
+            "mode": self.mode,
+            "colors": [[int(r), int(g), int(b)] for (r, g, b) in self.colors],
+            "brightness": int(self.brightness),
+            "speed": self.speed,
+        }
+
+    @classmethod
+    def from_dict(
+        cls, d: dict[str, Any], *, defaults: "LightingChannelConfig | None" = None
+    ) -> "LightingChannelConfig":
+        """Build a :class:`LightingChannelConfig` from a (possibly partial) mapping.
+
+        Unknown keys are ignored; missing keys fall back to ``defaults`` (or the
+        dataclass defaults).  Colours stored as lists are normalized to tuples of
+        three ints clamped to 0-255, ``brightness`` is clamped to 0-100, and an
+        unknown ``mode`` falls back to ``"fixed"``.
+        """
+        base = defaults if defaults is not None else cls()
+        if not isinstance(d, dict):
+            logger.warning(
+                "LightingChannelConfig.from_dict received non-dict %r; using defaults",
+                type(d),
+            )
+            return base
+
+        colors = base.colors
+        raw_colors = d.get("colors")
+        if raw_colors is not None:
+            colors = _normalize_colors(raw_colors, fallback=base.colors)
+
+        return cls(
+            mode=_normalize_lighting_mode(d.get("mode"), base.mode),
+            colors=colors,
+            brightness=_clamp_int(_as_int(d.get("brightness"), base.brightness), 0, 100),
+            speed=_as_str(d.get("speed"), base.speed),
+        )
+
+
+@dataclass
+class LightingConfig:
+    """Top-level RGB lighting configuration (pump ring + RGB Core fan channel).
+
+    ``enabled`` defaults to ``False`` so the app never touches the LEDs until the
+    user opts in.  When ``sync`` is ``True`` the ``ring`` configuration drives both
+    channels and ``fans`` is ignored by the engine.
+    """
+
+    enabled: bool = False  # False = app never touches LEDs
+    sync: bool = True  # True = ring config drives both channels
+    ring: LightingChannelConfig = field(default_factory=LightingChannelConfig)
+    fans: LightingChannelConfig = field(default_factory=LightingChannelConfig)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable mapping."""
+        return {
+            "enabled": bool(self.enabled),
+            "sync": bool(self.sync),
+            "ring": self.ring.to_dict(),
+            "fans": self.fans.to_dict(),
+        }
+
+    @classmethod
+    def from_dict(
+        cls, d: dict[str, Any], *, defaults: "LightingConfig | None" = None
+    ) -> "LightingConfig":
+        """Build a :class:`LightingConfig` from a (possibly partial) mapping."""
+        base = defaults if defaults is not None else cls()
+        if not isinstance(d, dict):
+            logger.warning(
+                "LightingConfig.from_dict received non-dict %r; using defaults", type(d)
+            )
+            return base
+
+        ring_raw = d.get("ring")
+        fans_raw = d.get("fans")
+        ring = (
+            LightingChannelConfig.from_dict(ring_raw, defaults=base.ring)
+            if isinstance(ring_raw, dict)
+            else base.ring
+        )
+        fans = (
+            LightingChannelConfig.from_dict(fans_raw, defaults=base.fans)
+            if isinstance(fans_raw, dict)
+            else base.fans
+        )
+
+        return cls(
+            enabled=_as_bool(d.get("enabled"), base.enabled),
+            sync=_as_bool(d.get("sync"), base.sync),
+            ring=ring,
+            fans=fans,
+        )
+
+
+@dataclass
 class AppConfig:
     """Top-level application configuration, persisted as a single JSON file."""
 
@@ -173,6 +301,7 @@ class AppConfig:
         )
     )
     lcd: LcdConfig = field(default_factory=LcdConfig)
+    lighting: LightingConfig = field(default_factory=LightingConfig)
 
     # ------------------------------------------------------------------ load
     @classmethod
@@ -247,6 +376,7 @@ class AppConfig:
             "pump": self.pump.to_dict(),
             "fan": self.fan.to_dict(),
             "lcd": self.lcd.to_dict(),
+            "lighting": self.lighting.to_dict(),
         }
 
     @classmethod
@@ -264,6 +394,7 @@ class AppConfig:
         pump_raw = d.get("pump")
         fan_raw = d.get("fan")
         lcd_raw = d.get("lcd")
+        lighting_raw = d.get("lighting")
 
         pump = (
             ChannelConfig.from_dict(pump_raw, defaults=defaults.pump)
@@ -280,6 +411,11 @@ class AppConfig:
             if isinstance(lcd_raw, dict)
             else defaults.lcd
         )
+        lighting = (
+            LightingConfig.from_dict(lighting_raw, defaults=defaults.lighting)
+            if isinstance(lighting_raw, dict)
+            else defaults.lighting
+        )
 
         return cls(
             poll_interval=_as_float(d.get("poll_interval"), defaults.poll_interval),
@@ -290,6 +426,7 @@ class AppConfig:
             pump=pump,
             fan=fan,
             lcd=lcd,
+            lighting=lighting,
         )
 
 
@@ -340,6 +477,76 @@ def _as_bool(value: Any, default: bool) -> bool:
 
 def _clamp_int(value: int, low: int, high: int) -> int:
     return max(low, min(high, value))
+
+
+def _normalize_lighting_mode(value: Any, default: str) -> str:
+    """Coerce a lighting ``mode`` value, falling back to ``"fixed"`` if unknown.
+
+    A non-string value (or ``None``) yields ``default``.  A string value is
+    validated against :data:`krakencam.backend.lighting_fx.MODES` when that module
+    is importable; an unrecognized key falls back to :data:`_LIGHTING_DEFAULT_MODE`
+    ("fixed").  If ``lighting_fx`` cannot be imported (e.g. during isolated config
+    round-trips) the string is accepted as-is so we do not silently discard a valid
+    mode merely because the effect engine is unavailable.
+    """
+    if not isinstance(value, str):
+        if value is None:
+            return default
+        logger.warning("Lighting mode is not a string (%r); using %r", value, default)
+        return default
+    # Local import to avoid import-order coupling between config and the effect
+    # engine (mirrors the curves import in _normalize_points).
+    try:
+        from krakencam.backend import lighting_fx
+    except Exception:  # pragma: no cover - lighting_fx optional at config-parse time
+        return value
+    if value in lighting_fx.MODES:
+        return value
+    logger.warning("Unknown lighting mode %r; using %r", value, _LIGHTING_DEFAULT_MODE)
+    return _LIGHTING_DEFAULT_MODE
+
+
+def _normalize_colors(
+    raw: Any, *, fallback: list[tuple[int, int, int]]
+) -> list[tuple[int, int, int]]:
+    """Normalize a lighting colour list from JSON into ``(r, g, b)`` int tuples.
+
+    Each colour is coerced to three ints clamped to 0-255.  Malformed entries are
+    skipped.  An *explicitly empty* list round-trips to ``[]`` (swatch-less modes
+    like ``off``/``spectrum`` persist no colours and must reload identically); the
+    ``fallback`` is only used when the input is not a list at all, or when a
+    *non-empty* input contained nothing usable.  The list length is *not* clamped
+    to a mode's min/max here — that is the effect engine's responsibility (it
+    depends on the active mode).
+    """
+    if not isinstance(raw, (list, tuple)):
+        logger.warning("Lighting colours are not a list (%r); using fallback", type(raw))
+        return [tuple(c) for c in fallback]
+
+    # An explicitly empty list is a legitimate value (off/spectrum keep no
+    # colours); preserve it rather than substituting the fallback.
+    if len(raw) == 0:
+        return []
+
+    colors: list[tuple[int, int, int]] = []
+    for item in raw:
+        if not isinstance(item, (list, tuple)) or len(item) != 3:
+            logger.warning("Skipping malformed colour %r", item)
+            continue
+        try:
+            r = _clamp_int(int(round(float(item[0]))), 0, 255)
+            g = _clamp_int(int(round(float(item[1]))), 0, 255)
+            b = _clamp_int(int(round(float(item[2]))), 0, 255)
+        except (TypeError, ValueError):
+            logger.warning("Skipping non-numeric colour %r", item)
+            continue
+        colors.append((r, g, b))
+
+    if not colors:
+        # Non-empty input that contained nothing usable: fall back.
+        logger.warning("No valid lighting colours parsed; using fallback")
+        return [tuple(c) for c in fallback]
+    return colors
 
 
 def _normalize_points(
