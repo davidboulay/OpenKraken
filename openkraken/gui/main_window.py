@@ -14,6 +14,13 @@ from __future__ import annotations
 import logging
 
 from PyQt6.QtCore import Qt, QTimer
+
+try:  # QtDBus is Linux-only but always present in the PyQt6 builds we target.
+    from PyQt6.QtDBus import QDBusConnection, QDBusServiceWatcher
+
+    _HAS_QTDBUS = True
+except ImportError:  # pragma: no cover - exotic builds without QtDBus
+    _HAS_QTDBUS = False
 from PyQt6.QtGui import (
     QAction,
     QCloseEvent,
@@ -192,32 +199,43 @@ class MainWindow(QMainWindow):
 
         return self._stack
 
-    #: How often to re-check for a tray host (ms) and for how many attempts.
-    #: At login the app usually starts before the panel registers its SNI host,
-    #: so isSystemTrayAvailable() is briefly False; ~3 minutes covers even very
-    #: slow session startups without polling forever.
+    #: D-Bus name of the StatusNotifierItem watcher provided by the panel.
+    _SNI_SERVICE = "org.kde.StatusNotifierWatcher"
+    #: Settle delay (ms) between the watcher appearing on the bus and creating
+    #: the icon, giving the applet time to register its host side.
+    _TRAY_CREATE_DELAY_MS = 1000
+    #: Fallback polling cadence, used only when QtDBus is unavailable.
     _TRAY_RETRY_INTERVAL_MS = 2000
     _TRAY_RETRY_MAX_ATTEMPTS = 90
 
     def _build_tray(self) -> None:
-        """Create the system tray icon, retrying until a tray host appears.
+        """Create the tray icon as soon as (and whenever) a tray host exists.
 
-        On COSMIC/Wayland the SNI host is provided by the panel, which may
-        register seconds AFTER an autostarted app launches. If no host is
-        available yet, a timer re-checks every ``_TRAY_RETRY_INTERVAL_MS`` for
-        up to ``_TRAY_RETRY_MAX_ATTEMPTS`` tries; until then the window simply
-        runs without a tray and close-to-tray degrades per ``_close_action``.
+        Two hard-won rules drive this design (observed on COSMIC, 2026-06-02):
+
+        1. ``QSystemTrayIcon.isSystemTrayAvailable()`` must NEVER be called
+           before the panel's SNI watcher is on the bus — Qt caches the answer
+           of its first "should we use the D-Bus tray" check for the process
+           lifetime, so one early call breaks tray creation forever. We query
+           the session bus directly instead (no cache).
+        2. The panel applet can restart mid-session, silently dropping every
+           registered item. A ``QDBusServiceWatcher`` on the watcher name lets
+           us recreate the icon whenever a new host registers.
         """
         self._tray: QSystemTrayIcon | None = None
         self._tray_retry_attempts = 0
         self._tray_retry_timer: QTimer | None = None
+        self._sni_watcher = None
 
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            _LOGGER.info(
-                "System tray not available yet; will keep checking for a tray "
-                "host every %d s.",
-                self._TRAY_RETRY_INTERVAL_MS // 1000,
-            )
+        bus = None
+        if _HAS_QTDBUS:
+            bus = QDBusConnection.sessionBus()
+            if not bus.isConnected():
+                bus = None
+        if bus is None:
+            # Last resort for exotic setups: poll Qt's own check. Unreliable
+            # at login (see rule 1) but better than nothing.
+            _LOGGER.info("QtDBus unavailable; falling back to polled tray detection.")
             timer = QTimer(self)
             timer.setInterval(self._TRAY_RETRY_INTERVAL_MS)
             timer.timeout.connect(self._retry_tray)
@@ -225,10 +243,58 @@ class MainWindow(QMainWindow):
             self._tray_retry_timer = timer
             return
 
+        watcher = QDBusServiceWatcher(
+            self._SNI_SERVICE,
+            bus,
+            QDBusServiceWatcher.WatchModeFlag.WatchForOwnerChange,
+            self,
+        )
+        watcher.serviceOwnerChanged.connect(self._on_sni_owner_changed)
+        self._sni_watcher = watcher
+
+        if bus.interface().isServiceRegistered(self._SNI_SERVICE).value():
+            self._create_tray()
+        else:
+            _LOGGER.info(
+                "No tray host on the session bus yet; the tray icon will be "
+                "created the moment one registers."
+            )
+
+    def _on_sni_owner_changed(self, service: str, old_owner: str, new_owner: str) -> None:
+        """React to the tray host (dis)appearing or being replaced."""
+        if new_owner:
+            _LOGGER.info(
+                "Tray host %s registered (owner %s); creating tray icon in %d ms.",
+                service,
+                new_owner,
+                self._TRAY_CREATE_DELAY_MS,
+            )
+            QTimer.singleShot(self._TRAY_CREATE_DELAY_MS, self._recreate_tray)
+        else:
+            _LOGGER.info("Tray host %s vanished; dropping tray icon until it returns.", service)
+            self._drop_tray()
+
+    def _recreate_tray(self) -> None:
+        """(Re)create the tray icon after the settle delay, if a host remains."""
+        self._drop_tray()
+        if _HAS_QTDBUS:
+            bus = QDBusConnection.sessionBus()
+            if not (
+                bus.isConnected()
+                and bus.interface().isServiceRegistered(self._SNI_SERVICE).value()
+            ):
+                return  # host vanished again while we waited
         self._create_tray()
 
+    def _drop_tray(self) -> None:
+        """Tear down the current tray icon (host gone or being replaced)."""
+        if self._tray is not None:
+            self._tray.hide()
+            self._tray.deleteLater()
+            self._tray = None
+
     def _retry_tray(self) -> None:
-        """Timer slot: build the tray as soon as a host registers."""
+        """Fallback timer slot (no QtDBus): build the tray when Qt sees a host."""
         self._tray_retry_attempts += 1
         if QSystemTrayIcon.isSystemTrayAvailable():
             if self._tray_retry_timer is not None:
@@ -279,6 +345,10 @@ class MainWindow(QMainWindow):
         tray.show()
 
         self._tray = tray
+        # Force the next sample to repaint the icon: after a recreate the cached
+        # integer temp may match the live one, which would otherwise skip the
+        # update and leave the fresh icon temp-less.
+        self._last_tray_temp = None
         # Match the initial label to the window's actual visibility. When launched
         # with --minimized (and a tray present) app.py skips show(), so no
         # showEvent fires; without this the menu would wrongly read "Hide window".

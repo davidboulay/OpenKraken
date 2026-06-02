@@ -19,7 +19,7 @@ from typing import Callable
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtNetwork import QAbstractSocket, QLocalServer, QLocalSocket
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
+from PyQt6.QtWidgets import QApplication
 
 from openkraken import __version__
 from openkraken.backend.device import KrakenDevice
@@ -272,19 +272,21 @@ def main(argv: list[str] | None = None) -> int:
         app.aboutToQuit.connect(instance_server.close)
 
     # Decide visibility before starting the engine so we don't flash the window.
-    # When minimized is requested the window stays hidden even if no tray is
-    # available yet: at login the app races the panel's tray host (it usually
-    # appears a few seconds later and MainWindow retries), and the window is
-    # always reachable by relaunching (single-instance activation) or via the
-    # tray once it materializes.
+    # When minimized is requested the window stays hidden unconditionally: the
+    # tray icon is created by MainWindow as soon as the SNI watcher appears on
+    # the session bus, and the window is always reachable by relaunching
+    # (single-instance activation).
+    #
+    # IMPORTANT: do NOT call QSystemTrayIcon.isSystemTrayAvailable() here. Qt
+    # computes "should use the D-Bus tray" ONCE per process at first use; at
+    # login this code can run before the panel registers the watcher, which
+    # would poison the cached answer to False for the process lifetime and
+    # break tray creation forever (observed on COSMIC, journal 2026-06-02).
     if start_minimized:
-        if QSystemTrayIcon.isSystemTrayAvailable():
-            _LOGGER.info("Starting minimized to tray.")
-        else:
-            _LOGGER.info(
-                "Starting minimized; no tray host yet (will keep retrying). "
-                "Relaunch OpenKraken to open the window."
-            )
+        _LOGGER.info(
+            "Starting minimized; tray icon appears once the panel's tray "
+            "host is up. Relaunch OpenKraken to open the window."
+        )
     else:
         window.show()
 
