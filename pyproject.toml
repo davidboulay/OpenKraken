@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kraken-cam"
+version = "0.1.0"
+description = "A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl)."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Kraken CAM contributors" }]
+keywords = ["nzxt", "kraken", "liquidctl", "aio", "cooler", "lcd", "pyqt6", "linux"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: X11 Applications :: Qt",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Hardware",
+    "Topic :: System :: Monitoring",
+]
+
+# NOTE: PyQt6 is intentionally NOT listed here. On the target system it is
+# provided by the distribution (system site-packages) and the venv is created
+# with --system-site-packages so it is visible. Install the optional [gui]
+# extra to pull PyQt6 from PyPI when no system package is available.
+dependencies = [
+    "liquidctl>=1.15",
+    "Pillow>=9",
+]
+
+[project.optional-dependencies]
+gui = ["PyQt6>=6.4"]
+
+[project.urls]
+Homepage = "https://github.com/liquidctl/liquidctl"
+"liquidctl" = "https://github.com/liquidctl/liquidctl"
+
+[project.scripts]
+kraken-cam = "krakencam.app:main"
+
+[tool.setuptools]
+# Ship the hand-written SVG icon and any other static assets alongside the code.
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = ["krakencam", "krakencam.*"]
+
+[tool.setuptools.package-data]
+krakencam = ["resources/*.svg", "resources/*.png"]
