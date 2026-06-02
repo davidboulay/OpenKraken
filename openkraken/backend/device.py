@@ -421,6 +421,32 @@ class KrakenDevice:
         """Upload an animated GIF to the LCD (blocking)."""
         return self._set_screen("gif", str(gif_path))
 
+    def clear_lcd_media(self) -> bool:
+        """Erase all media stored in the cooler's onboard LCD memory.
+
+        Uploaded images/GIFs persist in the device's media buckets and the
+        firmware replays the last one standalone (during boot, before any host
+        software runs).  This deletes every bucket via the driver's
+        ``_delete_all_buckets`` (which first switches the screen to the
+        firmware liquid mode), so subsequent boots show the firmware default
+        instead of stale media.  Callers should re-apply the configured LCD
+        mode afterwards.
+        """
+        with self._lock:
+            if self._dev is None or not self._connected:
+                logger.warning("clear_lcd_media: device not connected")
+                return False
+            try:
+                # Private driver API (no public equivalent); pinned liquidctl
+                # version in the venv makes this dependable.
+                self._dev._delete_all_buckets()  # noqa: SLF001
+                logger.info("LCD media buckets cleared")
+                return True
+            except Exception:
+                logger.exception("clear_lcd_media failed")
+                self._mark_disconnected()
+                return False
+
     # ------------------------------------------------------------ LED lighting
     def query_lighting_info(self) -> LightingInfo | None:
         """Discover per-channel LED accessories (PROTOCOL.md §3 step 2 / §6).

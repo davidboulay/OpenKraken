@@ -266,6 +266,15 @@ class LcdPage(QWidget):
 
         # --- apply + spec caption --------------------------------------------
         apply_row = QHBoxLayout()
+        self._clear_media_button = QPushButton("Clear stored media")
+        self._clear_media_button.setToolTip(
+            "Erase images/GIFs stored in the cooler's onboard memory.\n"
+            "The cooler replays the last uploaded media on its own during\n"
+            "boot (before OpenKraken starts); clearing restores the firmware\n"
+            "default boot screen. Your configured mode is re-applied after."
+        )
+        self._clear_media_button.clicked.connect(self._clear_stored_media)
+        apply_row.addWidget(self._clear_media_button)
         apply_row.addStretch(1)
         self._apply_button = QPushButton("Apply")
         self._apply_button.clicked.connect(self._apply)
@@ -488,3 +497,10 @@ class LcdPage(QWidget):
             self._config.save()
         except Exception:
             _LOGGER.exception("config.save() failed after applying LCD config")
+
+    def _clear_stored_media(self) -> None:
+        """Ask the engine to erase the cooler's onboard media buckets."""
+        try:
+            self._engine.clear_lcd_media()
+        except Exception:
+            _LOGGER.exception("clear_lcd_media request failed")

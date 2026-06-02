@@ -354,6 +354,28 @@ class ControlEngine(QThread):
         )
         self._requests.put(lambda: self._do_apply_lcd(snapshot))
 
+    def clear_lcd_media(self) -> None:
+        """Request erasure of the media stored in the cooler's LCD memory.
+
+        Thread-safe: enqueues the work onto the engine loop.  After clearing,
+        the currently configured LCD mode is re-applied so the screen never
+        stays on the bare firmware fallback.
+        """
+        self._requests.put(self._do_clear_lcd_media)
+
+    def _do_clear_lcd_media(self) -> None:
+        """Engine-thread worker for :meth:`clear_lcd_media`."""
+        if self._device.clear_lcd_media():
+            self.applied.emit(
+                "lcd", "stored media cleared (boot screen reset to firmware default)"
+            )
+            # _delete_all_buckets leaves the screen in liquid mode; re-apply the
+            # configured mode in case the user runs a sensors/static/gif screen.
+            # (Engine-thread context, so using the live mirror is safe.)
+            self._do_apply_lcd(self._lcd_cfg)
+        else:
+            self.error.emit("Could not clear the cooler's stored media")
+
     def apply_lighting(self, cfg: LightingConfig) -> None:
         """Request that RGB lighting be (re)configured from ``cfg``.
 

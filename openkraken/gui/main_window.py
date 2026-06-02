@@ -24,7 +24,6 @@ except ImportError:  # pragma: no cover - exotic builds without QtDBus
 from PyQt6.QtGui import (
     QAction,
     QCloseEvent,
-    QFontMetrics,
     QIcon,
     QKeySequence,
     QShortcut,
@@ -150,13 +149,24 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 18, 12, 14)
         layout.setSpacing(6)
 
-        # --- Title block -----------------------------------------------------
-        title = QLabel("OPEN", sidebar)
-        title.setObjectName("appTitle")
-        subtitle = QLabel("KRAKEN", sidebar)
-        subtitle.setObjectName("appTitleAccent")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
+        # --- Title block: app logo + wordmark ---------------------------------
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        logo = QLabel(sidebar)
+        logo.setPixmap(theme.make_app_icon().pixmap(26, 26))
+        logo.setFixedSize(26, 26)
+        logo.setScaledContents(True)
+        title_row.addWidget(logo)
+        wordmark = QLabel(sidebar)
+        wordmark.setObjectName("appTitle")
+        wordmark.setTextFormat(Qt.TextFormat.RichText)
+        wordmark.setText(
+            f'<span style="color:{theme.COLORS["text"]};">Open</span>'
+            f'<span style="color:{theme.COLORS["accent"]};">Kraken</span>'
+        )
+        title_row.addWidget(wordmark)
+        title_row.addStretch(1)
+        layout.addLayout(title_row)
         layout.addSpacing(18)
 
         # --- Navigation buttons ---------------------------------------------
@@ -181,6 +191,9 @@ class MainWindow(QMainWindow):
         self._conn_pill.setObjectName("connPill")
         self._conn_pill.setProperty("connected", False)
         self._conn_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Long model names ("NZXT Kraken 2024 Elite RGB") wrap to a second
+        # line instead of being elided — the user must see the full name.
+        self._conn_pill.setWordWrap(True)
         layout.addWidget(self._conn_pill)
 
         return sidebar
@@ -391,14 +404,13 @@ class MainWindow(QMainWindow):
     def _on_connection_changed(self, connected: bool, description: str) -> None:
         if connected:
             label = description or "Kraken Elite"
-            # Elide so a long model name (e.g. "NZXT Kraken 2024 Elite RGB")
-            # never overflows the fixed-width sidebar pill.
-            avail = max(60, self._conn_pill.width() - 24)
-            metrics = QFontMetrics(self._conn_pill.font())
-            elided = metrics.elidedText(label, Qt.TextElideMode.ElideRight, avail)
-            self._conn_pill.setText(f"●  {elided}")
+            # Word wrap (set on the pill) shows the full model name across
+            # lines; the tooltip is a belt-and-braces copy.
+            self._conn_pill.setText(f"●  {label}")
+            self._conn_pill.setToolTip(label)
         else:
             self._conn_pill.setText("●  Disconnected")
+            self._conn_pill.setToolTip("")
 
         self._conn_pill.setProperty("connected", connected)
         # Re-polish so the [connected] QSS selector updates.

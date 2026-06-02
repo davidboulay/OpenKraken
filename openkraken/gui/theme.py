@@ -400,6 +400,25 @@ def _build_qss() -> str:
         padding: 4px 8px;
     }}
 
+    /* ---- Sidebar branding + connection pill -------------------------- */
+    QLabel#appTitle {{
+        font-size: 17px;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+    }}
+    QLabel#connPill {{
+        background-color: {c['panel2']};
+        border: 1px solid {c['border']};
+        border-radius: 10px;
+        padding: 6px 10px;
+        font-size: 11px;
+        color: {c['crit']};
+    }}
+    QLabel#connPill[connected="true"] {{
+        color: {c['ok']};
+        border-color: rgba(52, 211, 153, 0.35);
+    }}
+
     /* ---- Status bar ------------------------------------------------- */
     QStatusBar {{
         background-color: {c['panel']};
