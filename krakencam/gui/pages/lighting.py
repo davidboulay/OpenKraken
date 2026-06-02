@@ -37,6 +37,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QFrame,
+    QGraphicsOpacityEffect,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -70,6 +71,9 @@ _PREVIEW_PX = 200
 _PREVIEW_RING_LEDS = 24  # ring LED count assumed by the preview (PROTOCOL.md §2)
 _PREVIEW_DOT_RADIUS = 7.0
 _PREVIEW_TICK_MS = 1000  # 1 Hz, matching the device's ~1 FPS limit (PROTOCOL.md §5)
+
+#: Opacity applied to sections made unusable by the enable/sync toggles.
+_DIM_OPACITY = 0.35
 
 # Swatch button visual size.
 _SWATCH_PX = 28
@@ -475,6 +479,9 @@ class LightingPage(QWidget):
         # config changes so animations restart cleanly.
         self._preview_origin = time.monotonic()
 
+        # Cached per-widget opacity effects used by _dim() (created lazily).
+        self._dim_effects: dict[QWidget, QGraphicsOpacityEffect] = {}
+
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(12)
@@ -483,11 +490,7 @@ class LightingPage(QWidget):
         top = QHBoxLayout()
         self._enable_check = QCheckBox("Control LEDs")
         self._enable_check.toggled.connect(self._on_enable_toggled)
-        self._sync_check = QCheckBox("Sync ring && fans")
-        self._sync_check.toggled.connect(self._on_sync_toggled)
         top.addWidget(self._enable_check)
-        top.addSpacing(18)
-        top.addWidget(self._sync_check)
         top.addStretch(1)
         self._detected_label = QLabel("")
         self._detected_label.setProperty("hint", True)
@@ -506,13 +509,24 @@ class LightingPage(QWidget):
         self._fans_panel = ChannelPanel(
             "fans", "Fans", self._lighting_cfg.fans, self._on_panel_changed
         )
+        # Sync sits directly above the Fans panel it overrides: when checked,
+        # the ring config drives both channels and the fans panel dims.
+        self._sync_check = QCheckBox("Sync ring && fans")
+        self._sync_check.setToolTip(
+            "Drive the fan LEDs with the Ring settings. The Fans panel below "
+            "is ignored while this is on."
+        )
+        self._sync_check.toggled.connect(self._on_sync_toggled)
         panels.addWidget(self._ring_panel)
+        panels.addSpacing(2)
+        panels.addWidget(self._sync_check)
         panels.addWidget(self._fans_panel)
         panels.addStretch(1)
         body.addLayout(panels, stretch=1)
 
         # Preview column.
         preview_col = QWidget()
+        self._preview_col = preview_col
         preview_layout = QVBoxLayout(preview_col)
         preview_layout.setContentsMargins(0, 0, 0, 0)
         preview_layout.setSpacing(8)
@@ -576,14 +590,34 @@ class LightingPage(QWidget):
         self._lighting_cfg = _copy_lighting(self._config.lighting)
         self._load_config(self._lighting_cfg)
 
+    def _dim(self, widget: QWidget, dimmed: bool) -> None:
+        """Visually dim (and disable) a section that is currently not usable.
+
+        ``setEnabled`` alone is too subtle in the dark theme, so a cached
+        :class:`QGraphicsOpacityEffect` darkens the whole section; the effect is
+        toggled rather than recreated (disabled effects are bypassed entirely
+        when painting).
+        """
+        effect = self._dim_effects.get(widget)
+        if effect is None:
+            effect = QGraphicsOpacityEffect(widget)
+            effect.setOpacity(_DIM_OPACITY)
+            effect.setEnabled(False)
+            widget.setGraphicsEffect(effect)
+            self._dim_effects[widget] = effect
+        effect.setEnabled(dimmed)
+        widget.setEnabled(not dimmed)
+
     def _sync_enabled_state(self) -> None:
-        """Enable/disable panels per the enable + sync toggles."""
+        """Dim every section that the enable + sync toggles make unusable."""
         enabled = self._enable_check.isChecked()
         sync = self._sync_check.isChecked()
-        self._sync_check.setEnabled(enabled)
-        self._ring_panel.setEnabled(enabled)
-        # Fans follow the ring while sync is on, so the panel is dimmed.
-        self._fans_panel.setEnabled(enabled and not sync)
+        # Master toggle off -> everything below it reads as inert.
+        self._dim(self._ring_panel, not enabled)
+        self._dim(self._sync_check, not enabled)
+        self._dim(self._preview_col, not enabled)
+        # Fans follow the ring while sync is on, so the panel is unusable.
+        self._dim(self._fans_panel, (not enabled) or sync)
 
     def _refresh_detected(self) -> None:
         """Show detected per-channel LED counts from the device, if known."""
