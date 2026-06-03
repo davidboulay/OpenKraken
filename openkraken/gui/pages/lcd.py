@@ -249,6 +249,10 @@ class LcdPage(QWidget):
         self._ring_reset_btn.setToolTip("Reset the ring colour to the default purple")
         self._ring_reset_btn.clicked.connect(self._reset_ring_color)
         self._ring_color_row = QWidget()
+        self._ring_color_row.setObjectName("ringColorRow")
+        # Transparent so the wrapper doesn't paint a panel-coloured box behind
+        # the swatch/Reset (scoped by id so the child buttons keep their style).
+        self._ring_color_row.setStyleSheet("QWidget#ringColorRow { background: transparent; }")
         ring_row = QHBoxLayout(self._ring_color_row)
         ring_row.setContentsMargins(0, 0, 0, 0)
         ring_row.setSpacing(8)
