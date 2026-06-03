@@ -251,6 +251,14 @@ class KrakenDevice:
         #: Watches the driver logger for swallowed LCD bucket failures so uploads
         #: can self-heal (installed once, lazily, in :meth:`_set_screen`).
         self._bucket_watcher: _BucketFailureWatcher | None = None
+        #: While True (set only around image/GIF uploads), the driver's LCD
+        #: bucket-switch is gated so a contention-failed frame never reaches the
+        #: panel: the firmware-liquid switch the driver uses for its memory reset
+        #: is suppressed, and switching to a bucket whose setup failed is refused
+        #: (the panel holds the last good frame). See :meth:`_install_lcd_switch_guard`.
+        self._lcd_guard_active: bool = False
+        #: Per-bucket result of the most recent ``_setup_bucket`` while guarding.
+        self._lcd_setup_ok: dict[int, bool] = {}
 
     def _ensure_bucket_watcher(self) -> _BucketFailureWatcher:
         """Install (once) and return the driver bucket-failure watcher."""
@@ -258,6 +266,52 @@ class KrakenDevice:
             self._bucket_watcher = _BucketFailureWatcher()
             logging.getLogger(_DRIVER_LOGGER_NAME).addHandler(self._bucket_watcher)
         return self._bucket_watcher
+
+    def _install_lcd_switch_guard(self, dev: Any) -> None:
+        """Wrap the driver's bucket setup/switch so a bad frame never displays.
+
+        The kraken3 image-upload path (``_send_data``) always switches the panel
+        to the freshly-written bucket -- even when ``_setup_bucket`` failed (HID
+        contention) or when it had to reset device memory by switching to the
+        firmware liquid screen.  Either makes a streamed sensor frame flash the
+        firmware screen.  We wrap both primitives once: while ``_lcd_guard_active``
+        (set only around image/GIF uploads) the wrapper records each setup result
+        and refuses to switch to a failed bucket, and suppresses the liquid-mode
+        switch (mode ``0x2``) the driver uses for its memory reset -- so on any
+        failure the panel simply holds the last good frame until a retry lands.
+        Outside guarded uploads (e.g. an explicit liquid-mode request) both pass
+        straight through.  No-op if the private primitives are absent.
+        """
+        if getattr(dev, "_ok_switch_guard_installed", False):
+            return
+        if not (hasattr(dev, "_setup_bucket") and hasattr(dev, "_switch_bucket")):
+            logger.debug("LCD switch guard not installed: driver primitives absent")
+            return
+        orig_setup = dev._setup_bucket
+        orig_switch = dev._switch_bucket
+
+        def guarded_setup(start_index, end_index, mem_start, mem_size):
+            ok = orig_setup(start_index, end_index, mem_start, mem_size)
+            if self._lcd_guard_active:
+                self._lcd_setup_ok[start_index] = bool(ok)
+            return ok
+
+        def guarded_switch(bucket_index, mode=0x4):
+            if self._lcd_guard_active:
+                if mode == 0x2:
+                    # Driver's memory-reset liquid switch: skip it so the panel
+                    # keeps showing the last good frame (report success so the
+                    # driver's delete-all proceeds to free memory).
+                    return True
+                if not self._lcd_setup_ok.get(bucket_index, True):
+                    # Setup for this bucket failed -> do not put it on screen.
+                    return False
+            return orig_switch(bucket_index, mode)
+
+        dev._setup_bucket = guarded_setup
+        dev._switch_bucket = guarded_switch
+        dev._ok_switch_guard_installed = True
+        logger.debug("LCD switch guard installed")
 
     # --------------------------------------------------------------- discovery
     def connect(self) -> bool:
@@ -327,6 +381,7 @@ class KrakenDevice:
             self._dev = chosen
             self._connected = True
             self._description = str(getattr(chosen, "description", "") or "")
+            self._install_lcd_switch_guard(chosen)
             self._apply_init_status(init_status)
             logger.info(
                 "Connected to %s (fw=%s, brightness=%d%%, orientation=%d°)",
@@ -730,19 +785,22 @@ class KrakenDevice:
                 logger.warning("set_screen(%s): device not connected", mode)
                 return False
             try:
+                if is_data_upload:
+                    # Gate the driver's bucket switch so a contention-failed frame
+                    # holds the last good image instead of flashing the firmware
+                    # screen (see _install_lcd_switch_guard).
+                    self._lcd_guard_active = True
+                    self._lcd_setup_ok.clear()
                 if watcher is not None:
                     watcher.reset()
                 self._dev.set_screen("lcd", mode, value)
-                # The driver swallows bucket-transfer failures (it wrote to a
-                # bad bucket -> dark screen) and returns as if successful. Two
-                # causes, two remedies:
-                #   * transient HID contention (another process touching the
-                #     hidraw node) -- a plain re-upload usually clears it, and
-                #     costs no visible glitch;
-                #   * bucket-memory exhaustion (~every 30 same-size frames) --
-                #     needs an explicit _delete_all_buckets, which briefly shows
-                #     the firmware liquid screen, so we only do it as a last
-                #     resort after plain retries keep failing.
+                # The driver swallows bucket-transfer failures (the switch guard
+                # kept the bad frame off-screen, so the panel held its last good
+                # image) and returns as if successful. Recover the content:
+                #   * transient HID contention -- a plain re-upload usually lands;
+                #   * bucket-memory exhaustion (~every 30 frames) -- clear buckets
+                #     and retry (the guard suppresses the liquid switch, so even
+                #     this is flash-free).
                 if watcher is not None and watcher.failed:
                     if not self._retry_lcd_upload(mode, value, watcher):
                         return False
@@ -762,6 +820,8 @@ class KrakenDevice:
                 logger.exception("set_screen(lcd, %s, %r) failed", mode, value)
                 self._mark_disconnected()
                 return False
+            finally:
+                self._lcd_guard_active = False
 
     def _retry_lcd_upload(self, mode: str, value: Any, watcher: _BucketFailureWatcher) -> bool:
         """Recover a failed LCD upload. Caller holds the lock and ``watcher.failed``.
