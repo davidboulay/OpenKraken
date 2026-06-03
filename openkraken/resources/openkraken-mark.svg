@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="256" height="256" viewBox="0 0 64 64" xmlns="http://www.w3.org/2000/svg">
+  <!-- OpenKraken mark: the droplet only, transparent background (for the LCD). -->
+  <defs>
+    <linearGradient id="drop" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#8f55f0"/>
+      <stop offset="1" stop-color="#7c3aed"/>
+    </linearGradient>
+  </defs>
+  <path d="M32 7
+           C 40 20, 50 29, 50 41
+           a 18 18 0 1 1 -36 0
+           C 14 29, 24 20, 32 7 Z"
+        fill="url(#drop)"/>
+  <path d="M24 39
+           a 7 10 0 0 0 6 13"
+        fill="none" stroke="#ecedf1" stroke-width="3.2"
+        stroke-linecap="round" opacity="0.55"/>
+</svg>

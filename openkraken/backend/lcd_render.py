@@ -291,6 +291,26 @@ LOGO_DIR = Path.home() / ".config" / "openkraken" / "logos"
 #: Cache of loaded+scaled logo images, keyed by (vendor, target_height).
 _LOGO_CACHE: dict[tuple[str, int], Image.Image | None] = {}
 
+#: Bundled OpenKraken droplet mark (used as the "Liquid" logo on sensor screens).
+_APP_MARK_PATH = Path(__file__).resolve().parent.parent / "resources" / "openkraken-mark.png"
+_APP_MARK_CACHE: dict[int, Image.Image | None] = {}
+
+
+def _load_app_mark(target_h: int) -> Image.Image | None:
+    """Load and scale the bundled OpenKraken droplet mark to *target_h* px."""
+    if target_h in _APP_MARK_CACHE:
+        return _APP_MARK_CACHE[target_h]
+    mark: Image.Image | None = None
+    try:
+        if _APP_MARK_PATH.is_file():
+            src = Image.open(_APP_MARK_PATH).convert("RGBA")
+            scale = target_h / max(1, src.height)
+            mark = src.resize((max(1, round(src.width * scale)), target_h))
+    except (OSError, ValueError) as exc:
+        _LOGGER.warning("could not load app mark %s: %s", _APP_MARK_PATH, exc)
+    _APP_MARK_CACHE[target_h] = mark
+    return mark
+
 
 def _load_vendor_logo(vendor: str, target_h: int) -> Image.Image | None:
     """Load and scale a user-supplied ``<vendor>.png`` to *target_h* px, or None."""
@@ -593,9 +613,14 @@ def _render_triple(data: LcdData) -> Image.Image:
 
     # --- Liquid, large, centred and lifted up. ---
     liquid_y = cy - 78
-    _draw_text_anchored(
-        draw, (cx, liquid_y - 92), "LIQUID", _font(32), _TEXT_DIM, anchor="mm"
-    )
+    # The OpenKraken droplet mark stands in for the "LIQUID" label.
+    mark = _load_app_mark(target_h=46)
+    if mark is not None:
+        img.paste(mark, (int(cx - mark.width / 2), int(liquid_y - 92 - mark.height / 2)), mark)
+    else:
+        _draw_text_anchored(
+            draw, (cx, liquid_y - 92), "LIQUID", _font(32), _TEXT_DIM, anchor="mm"
+        )
     liquid_text = _fmt_temp(data.liquid_temp)
     liquid_color = _temp_color(data.liquid_temp, "liquid")
     liquid_font = _font(138)
@@ -627,8 +652,19 @@ def _render_triple(data: LcdData) -> Image.Image:
 
     def _side(x: float, label: str, accent: tuple[int, int, int], kind: str,
               temp: float | None, load: float | None, vendor: str | None) -> None:
-        _draw_vendor_badge(img, draw, (x, side_y - 80), vendor, size=18)
-        _draw_text_anchored(draw, (x, side_y - 48), label, side_label_font, accent, anchor="mm")
+        # Vendor logo replaces the CPU/GPU text label; fall back to the label
+        # (or wordmark badge) when no logo image is installed for this vendor.
+        logo = _load_vendor_logo((vendor or "").lower(), target_h=34) if vendor else None
+        if logo is not None:
+            max_w = 150.0
+            if logo.width > max_w:
+                s = max_w / logo.width
+                logo = logo.resize((int(max_w), max(1, int(logo.height * s))))
+            img.paste(logo, (int(x - logo.width / 2), int(side_y - 50 - logo.height / 2)), logo)
+        elif vendor and (vendor or "").lower() in _VENDOR_BADGES:
+            _draw_vendor_badge(img, draw, (x, side_y - 50), vendor, size=20)
+        else:
+            _draw_text_anchored(draw, (x, side_y - 48), label, side_label_font, accent, anchor="mm")
         temp_text = _fmt_temp(temp)
         if temp is not None:
             temp_text += "°"
