@@ -37,7 +37,10 @@ _DRIVER_LOGGER_NAME = "liquidctl.driver.kraken3"
 
 #: Plain (no-clear) re-upload attempts for transient HID-contention failures
 #: before resorting to a bucket clear, and total clear+retry attempts after that.
-_LCD_PLAIN_RETRIES = 4
+#: Kept small: each plain retry consumes a fresh bucket, so over-retrying just
+#: hastens memory exhaustion (and its clear). The switch guard already keeps a
+#: failed frame off-screen, so a skipped frame merely holds the last good image.
+_LCD_PLAIN_RETRIES = 2
 _LCD_CLEAR_RETRIES = 2
 
 
@@ -270,17 +273,17 @@ class KrakenDevice:
     def _install_lcd_switch_guard(self, dev: Any) -> None:
         """Wrap the driver's bucket setup/switch so a bad frame never displays.
 
-        The kraken3 image-upload path (``_send_data``) always switches the panel
-        to the freshly-written bucket -- even when ``_setup_bucket`` failed (HID
-        contention) or when it had to reset device memory by switching to the
-        firmware liquid screen.  Either makes a streamed sensor frame flash the
-        firmware screen.  We wrap both primitives once: while ``_lcd_guard_active``
-        (set only around image/GIF uploads) the wrapper records each setup result
-        and refuses to switch to a failed bucket, and suppresses the liquid-mode
-        switch (mode ``0x2``) the driver uses for its memory reset -- so on any
-        failure the panel simply holds the last good frame until a retry lands.
-        Outside guarded uploads (e.g. an explicit liquid-mode request) both pass
-        straight through.  No-op if the private primitives are absent.
+        The kraken3 image-upload path (``_send_data``) switches the panel to the
+        freshly-written bucket even when ``_setup_bucket`` failed (HID contention
+        wrote nothing valid) -- which flashes the firmware screen mid-stream. We
+        wrap both primitives once: while ``_lcd_guard_active`` (set only around
+        image/GIF uploads) the wrapper records each setup result and refuses to
+        switch to a *data* bucket whose setup failed, so the panel holds the last
+        good frame until a retry lands. The driver's memory-reset liquid switch
+        (mode ``0x2``) is deliberately NOT blocked -- it is required to free the
+        active bucket during a clear. Outside guarded uploads (e.g. an explicit
+        liquid-mode request) both pass straight through. No-op if the private
+        primitives are absent.
         """
         if getattr(dev, "_ok_switch_guard_installed", False):
             return
@@ -297,14 +300,14 @@ class KrakenDevice:
             return ok
 
         def guarded_switch(bucket_index, mode=0x4):
-            if self._lcd_guard_active:
-                if mode == 0x2:
-                    # Driver's memory-reset liquid switch: skip it so the panel
-                    # keeps showing the last good frame (report success so the
-                    # driver's delete-all proceeds to free memory).
-                    return True
+            # NB: we must NOT suppress the mode 0x2 (liquid) switch -- the driver
+            # uses it inside _delete_all_buckets to move the panel off the active
+            # data bucket so it can be freed; blocking it leaves memory full and
+            # every later upload fails (permanent dark). We only refuse switching
+            # to a *data* bucket whose setup failed, so a contention-failed frame
+            # holds the last good image instead of flashing on screen.
+            if self._lcd_guard_active and mode != 0x2:
                 if not self._lcd_setup_ok.get(bucket_index, True):
-                    # Setup for this bucket failed -> do not put it on screen.
                     return False
             return orig_switch(bucket_index, mode)
 
