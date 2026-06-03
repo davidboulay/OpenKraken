@@ -348,6 +348,7 @@ def test_close_action_matrix() -> None:
     app = QApplication.instance() or QApplication(sys.argv)
 
     config = AppConfig()
+    config.check_updates_on_start = False  # no network in tests
     device = KrakenDevice()  # constructed, NOT connected
     sensors = SystemSensors()
     engine = ControlEngine(device, sensors, config)  # constructed, NOT started
@@ -685,6 +686,7 @@ def test_gui() -> None:
     theme.apply_theme(app)
 
     config = AppConfig()
+    config.check_updates_on_start = False  # no network in tests
     device = KrakenDevice()        # constructed, NOT connected
     sensors = SystemSensors()
     engine = ControlEngine(device, sensors, config)   # constructed, NOT started
@@ -779,6 +781,7 @@ def test_lighting_page() -> None:
     theme.apply_theme(app)
 
     config = AppConfig()
+    config.check_updates_on_start = False  # no network in tests
     device = KrakenDevice()        # constructed, NOT connected
     sensors = SystemSensors()
     engine = ControlEngine(device, sensors, config)   # constructed, NOT started

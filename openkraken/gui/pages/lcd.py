@@ -173,6 +173,12 @@ class LcdPage(QWidget):
         self._last_status: "DeviceStatus | None" = None
         self._last_snap: "SystemSnapshot | None" = None
 
+        # Static hardware-vendor tags for the preview badges (from the engine's
+        # sensors), read defensively so the page never hard-depends on them.
+        _sensors = getattr(engine, "_sensors", None)
+        self._cpu_vendor: str | None = getattr(_sensors, "cpu_vendor", None)
+        self._gpu_vendor: str | None = getattr(_sensors, "gpu_vendor", None)
+
         root = QHBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(18)
@@ -468,6 +474,8 @@ class LcdPage(QWidget):
             gpu_load=getattr(snap, "gpu_load", None) if snap else None,
             pump_rpm=getattr(status, "pump_rpm", None) if status else None,
             fan_rpm=getattr(status, "fan_rpm", None) if status else None,
+            cpu_vendor=self._cpu_vendor,
+            gpu_vendor=self._gpu_vendor,
         )
 
     # ------------------------------------------------------------------ apply

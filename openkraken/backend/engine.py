@@ -637,6 +637,8 @@ class ControlEngine(QThread):
             gpu_load=snap.gpu_load,
             pump_rpm=status.pump_rpm,
             fan_rpm=status.fan_rpm,
+            cpu_vendor=self._sensors.cpu_vendor,
+            gpu_vendor=self._sensors.gpu_vendor,
         )
         try:
             path = lcd_render.render_to_file(self._lcd_cfg.sensor_style, data)

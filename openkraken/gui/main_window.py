@@ -150,13 +150,10 @@ class MainWindow(QMainWindow):
         layout.setSpacing(6)
 
         # --- Title block: app logo + wordmark ---------------------------------
+        # Wordmark only -- the droplet already shows in the window titlebar /
+        # taskbar (setWindowIcon), so a second one here just duplicated it.
         title_row = QHBoxLayout()
         title_row.setSpacing(8)
-        logo = QLabel(sidebar)
-        logo.setPixmap(theme.make_app_icon().pixmap(26, 26))
-        logo.setFixedSize(26, 26)
-        logo.setScaledContents(True)
-        title_row.addWidget(logo)
         wordmark = QLabel(sidebar)
         wordmark.setObjectName("appTitle")
         wordmark.setTextFormat(Qt.TextFormat.RichText)
@@ -533,6 +530,27 @@ class MainWindow(QMainWindow):
         _LOGGER.info("Quit requested from tray.")
         self._engine.stop()
         QApplication.quit()
+
+    def restart_app(self) -> None:
+        """Stop the engine and re-exec OpenKraken in place (for self-update).
+
+        ``os.execv`` replaces this process image, so it keeps the same systemd
+        unit / launch context — the freshly pulled code runs on next start.
+        """
+        import os
+        import sys
+
+        _LOGGER.info("Restarting OpenKraken to load the updated version.")
+        self._really_quit = True
+        try:
+            self._engine.stop()
+        except Exception:
+            _LOGGER.exception("engine.stop() during restart failed (continuing)")
+        try:
+            os.execv(sys.executable, [sys.executable, "-m", "openkraken", *sys.argv[1:]])
+        except Exception:
+            _LOGGER.exception("os.execv restart failed; quitting instead")
+            QApplication.quit()
 
     def _close_action(self) -> str:
         """Decide what closing the window should do.

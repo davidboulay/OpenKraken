@@ -68,6 +68,14 @@ _CRIT = (239, 68, 68)         # #ef4444 red
 _CPU = (56, 189, 248)         # #38bdf8 cyan
 _GPU = (52, 211, 153)         # #34d399 green
 
+# Vendor badges: wordmark text + brand colour (stylised, not the trademarked
+# logos). Drawn next to the CPU/GPU readouts; vendor is auto-detected.
+_VENDOR_BADGES: dict[str, tuple[str, tuple[int, int, int]]] = {
+    "amd": ("AMD", (237, 28, 36)),       # AMD red
+    "intel": ("INTEL", (0, 113, 197)),   # Intel blue
+    "nvidia": ("NVIDIA", (118, 185, 0)), # NVIDIA green
+}
+
 # Per-metric warning / critical thresholds (°C).
 _THRESHOLDS: dict[str, tuple[float, float]] = {
     "cpu": (75.0, 88.0),
@@ -111,6 +119,9 @@ class LcdData:
     gpu_load: float | None
     pump_rpm: int | None
     fan_rpm: int | None
+    #: Hardware vendor tags ("amd"/"intel"/"nvidia"/None) for the CPU/GPU badges.
+    cpu_vendor: str | None = None
+    gpu_vendor: str | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -269,6 +280,49 @@ def _draw_load_bar(
     )
 
 
+def _draw_vendor_badge(
+    draw: ImageDraw.ImageDraw,
+    center: tuple[float, float],
+    vendor: str | None,
+    size: int = 22,
+) -> None:
+    """Draw a small vendor wordmark badge centred at *center* (no-op if unknown)."""
+    entry = _VENDOR_BADGES.get((vendor or "").lower())
+    if entry is None:
+        return
+    text, color = entry
+    font = _font(size)
+    pad_x, pad_y = 9.0, 4.0
+    w, h = _measure(draw, text, font)
+    cx, cy = center
+    x0, y0 = cx - w / 2.0 - pad_x, cy - h / 2.0 - pad_y
+    x1, y1 = cx + w / 2.0 + pad_x, cy + h / 2.0 + pad_y
+    draw.rounded_rectangle((x0, y0, x1, y1), radius=(y1 - y0) / 2.0, outline=color, width=2)
+    _draw_text_anchored(draw, (cx, cy), text, font, color, anchor="mm")
+
+
+def _draw_liquid_arc(
+    draw: ImageDraw.ImageDraw,
+    liquid_temp: float | None,
+    ring_radius: float,
+    track_w: int = 14,
+    arc_w: int = 26,
+) -> None:
+    """Draw the full track ring + the liquid-temperature value arc (shared)."""
+    arc_box = _arc_bbox(ring_radius)
+    draw.arc(arc_box, start=_ARC_START, end=_ARC_START + _ARC_SWEEP, fill=_RING_BG, width=track_w)
+    if liquid_temp is None:
+        return
+    frac = max(0.0, min(1.0, (liquid_temp - _LIQUID_MIN) / (_LIQUID_MAX - _LIQUID_MIN)))
+    sweep = _ARC_SWEEP * frac
+    if sweep <= 0.5:
+        return
+    arc_color = _temp_color(liquid_temp, "liquid")
+    if arc_color == _TEXT:  # below warn -> brand purple
+        arc_color = _ACCENT
+    draw.arc(arc_box, start=_ARC_START, end=_ARC_START + sweep, fill=arc_color, width=arc_w)
+
+
 # --------------------------------------------------------------------------- #
 # Style: liquid_ring
 # --------------------------------------------------------------------------- #
@@ -280,38 +334,8 @@ def _render_liquid_ring(data: LcdData) -> Image.Image:
     cx, cy = CENTER
 
     ring_radius = SAFE_RADIUS - 14.0
-    track_w = 14
-    arc_w = 26
-    arc_box = _arc_bbox(ring_radius)
-
-    # Thin full track ring (270° to match the dial opening at the bottom).
-    draw.arc(
-        arc_box,
-        start=_ARC_START,
-        end=_ARC_START + _ARC_SWEEP,
-        fill=_RING_BG,
-        width=track_w,
-    )
-
-    # Thick value arc proportional to liquid temp over the 270° sweep.
-    if data.liquid_temp is not None:
-        frac = (data.liquid_temp - _LIQUID_MIN) / (_LIQUID_MAX - _LIQUID_MIN)
-        frac = max(0.0, min(1.0, frac))
-        sweep = _ARC_SWEEP * frac
-        arc_color = _temp_color(data.liquid_temp, "liquid")
-        if arc_color == _TEXT:  # value below warn -> use the brand purple
-            arc_color = _ACCENT
-        if sweep > 0.5:
-            draw.arc(
-                arc_box,
-                start=_ARC_START,
-                end=_ARC_START + sweep,
-                fill=arc_color,
-                width=arc_w,
-            )
-        value_color = _temp_color(data.liquid_temp, "liquid")
-    else:
-        value_color = _TEXT_DIM
+    _draw_liquid_arc(draw, data.liquid_temp, ring_radius)
+    value_color = _temp_color(data.liquid_temp, "liquid") if data.liquid_temp is not None else _TEXT_DIM
 
     # "LIQUID" label above the big number.
     label_font = _font(46)
@@ -383,6 +407,7 @@ def _render_half(
     kind: str,
     temp: float | None,
     load: float | None,
+    vendor: str | None = None,
 ) -> None:
     """Render one half (CPU or GPU) of the split screen.
 
@@ -407,10 +432,12 @@ def _render_half(
     half_w = max(60.0, half_w)
     bar_x0 = cx - half_w
     bar_x1 = cx + half_w
-    # Accent label (e.g. "CPU") above-left of the number.
-    _draw_text_anchored(
-        draw, (cx, band_center_y - 116), label, label_font, accent, anchor="mm"
-    )
+    # Accent label (e.g. "CPU") above the number, with the vendor badge beside it.
+    label_y = band_center_y - 116
+    _draw_text_anchored(draw, (cx, label_y), label, label_font, accent, anchor="mm")
+    if vendor:
+        lw, _lh = _measure(draw, label, label_font)
+        _draw_vendor_badge(draw, (cx + lw / 2.0 + 52, label_y), vendor, size=18)
 
     temp_text = _fmt_temp(temp)
     color = _temp_color(temp, kind)
@@ -466,6 +493,7 @@ def _render_cpu_gpu(data: LcdData) -> Image.Image:
         kind="cpu",
         temp=data.cpu_temp,
         load=data.cpu_load,
+        vendor=data.cpu_vendor,
     )
     _render_half(
         draw,
@@ -475,6 +503,7 @@ def _render_cpu_gpu(data: LcdData) -> Image.Image:
         kind="gpu",
         temp=data.gpu_temp,
         load=data.gpu_load,
+        vendor=data.gpu_vendor,
     )
 
     return img
@@ -486,50 +515,52 @@ def _render_cpu_gpu(data: LcdData) -> Image.Image:
 
 
 def _render_triple(data: LcdData) -> Image.Image:
-    """Render liquid-big-center, CPU-left / GPU-right, pump/fan footer."""
+    """Render the all-sensors screen: rim ring + liquid centre, CPU/GPU sides,
+    vendor badges, and a pump/fan footer (visuals lifted to clear the footer)."""
     img, draw = _new_canvas()
     cx, cy = CENTER
 
-    # --- Liquid, large, centred (shifted slightly up to leave footer room). ---
-    liquid_y = cy - 36
-    liquid_label_font = _font(34)
-    liquid_font = _font(150)
-    liquid_unit_font = _font(44)
+    # Liquid-temperature arc around the rim (shared with the liquid_ring style).
+    _draw_liquid_arc(draw, data.liquid_temp, SAFE_RADIUS - 14.0, track_w=12, arc_w=20)
 
+    # --- Liquid, large, centred and lifted up. ---
+    liquid_y = cy - 78
     _draw_text_anchored(
-        draw, (cx, liquid_y - 108), "LIQUID", liquid_label_font, _TEXT_DIM, anchor="mm"
+        draw, (cx, liquid_y - 92), "LIQUID", _font(32), _TEXT_DIM, anchor="mm"
     )
     liquid_text = _fmt_temp(data.liquid_temp)
     liquid_color = _temp_color(data.liquid_temp, "liquid")
+    liquid_font = _font(138)
+    liquid_unit_font = _font(42)
     lw, lh = _measure(draw, liquid_text, liquid_font)
     unit = "°C"
     uw, _uh = _measure(draw, unit, liquid_unit_font)
     gap = 10.0
-    group_w = lw + gap + uw
-    num_cx = cx - group_w / 2.0 + lw / 2.0
+    num_cx = cx - (lw + gap + uw) / 2.0 + lw / 2.0
     _draw_text_anchored(
         draw, (num_cx, liquid_y), liquid_text, liquid_font, liquid_color, anchor="mm"
     )
     _draw_text_anchored(
         draw,
-        (num_cx + lw / 2.0 + gap + uw / 2.0, liquid_y - lh / 2.0 + 30),
+        (num_cx + lw / 2.0 + gap + uw / 2.0, liquid_y - lh / 2.0 + 28),
         unit,
         liquid_unit_font,
         _TEXT_DIM,
         anchor="mm",
     )
 
-    # --- CPU (left) and GPU (right), medium. ---
-    side_label_font = _font(30)
-    side_temp_font = _font(64)
-    side_load_font = _font(30)
-    side_y = cy + 118
+    # --- CPU (left) and GPU (right), medium, with vendor badges. ---
+    side_label_font = _font(28)
+    side_temp_font = _font(60)
+    side_load_font = _font(28)
+    side_y = cy + 86
     cpu_x = cx - 150
     gpu_x = cx + 150
 
     def _side(x: float, label: str, accent: tuple[int, int, int], kind: str,
-              temp: float | None, load: float | None) -> None:
-        _draw_text_anchored(draw, (x, side_y - 52), label, side_label_font, accent, anchor="mm")
+              temp: float | None, load: float | None, vendor: str | None) -> None:
+        _draw_vendor_badge(draw, (x, side_y - 80), vendor, size=18)
+        _draw_text_anchored(draw, (x, side_y - 48), label, side_label_font, accent, anchor="mm")
         temp_text = _fmt_temp(temp)
         if temp is not None:
             temp_text += "°"
@@ -538,29 +569,29 @@ def _render_triple(data: LcdData) -> Image.Image:
         )
         _draw_text_anchored(
             draw,
-            (x, side_y + 48),
+            (x, side_y + 44),
             _fmt_load(load),
             side_load_font,
             _TEXT_DIM if load is None else _TEXT,
             anchor="mm",
         )
 
-    _side(cpu_x, "CPU", _CPU, "cpu", data.cpu_temp, data.cpu_load)
-    _side(gpu_x, "GPU", _GPU, "gpu", data.gpu_temp, data.gpu_load)
+    _side(cpu_x, "CPU", _CPU, "cpu", data.cpu_temp, data.cpu_load, data.cpu_vendor)
+    _side(gpu_x, "GPU", _GPU, "gpu", data.gpu_temp, data.gpu_load, data.gpu_vendor)
 
     # Thin vertical divider between the two side columns.
-    draw.line((cx, side_y - 40, cx, side_y + 56), fill=_RING_BG, width=2)
+    draw.line((cx, side_y - 36, cx, side_y + 52), fill=_RING_BG, width=2)
 
-    # --- Pump + fan RPM footer row, inside the lower circle. ---
-    foot_label_font = _font(24)
-    foot_font = _font(30)
-    foot_y = cy + 198
+    # --- Pump + fan RPM footer row, well clear of the side block. ---
+    foot_label_font = _font(22)
+    foot_font = _font(28)
+    foot_y = cy + 190
     pump_x = cx - 108
     fan_x = cx + 108
     _draw_text_anchored(draw, (pump_x, foot_y), "PUMP", foot_label_font, _TEXT_DIM, anchor="mm")
     _draw_text_anchored(
         draw,
-        (pump_x, foot_y + 30),
+        (pump_x, foot_y + 28),
         _fmt_rpm(data.pump_rpm),
         foot_font,
         _TEXT if data.pump_rpm is not None else _TEXT_DIM,
@@ -569,7 +600,7 @@ def _render_triple(data: LcdData) -> Image.Image:
     _draw_text_anchored(draw, (fan_x, foot_y), "FAN", foot_label_font, _TEXT_DIM, anchor="mm")
     _draw_text_anchored(
         draw,
-        (fan_x, foot_y + 30),
+        (fan_x, foot_y + 28),
         _fmt_rpm(data.fan_rpm),
         foot_font,
         _TEXT if data.fan_rpm is not None else _TEXT_DIM,
