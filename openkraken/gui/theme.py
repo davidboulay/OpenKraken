@@ -310,16 +310,17 @@ def _build_qss() -> str:
         background-color: {c['panel']};
         border: 1px solid {c['border']};
         border-radius: 10px;
-        margin-top: 14px;
-        padding: 12px;
+        margin-top: 20px;
+        padding: 18px 14px 14px 14px;
         font-weight: 600;
     }}
     QGroupBox::title {{
         subcontrol-origin: margin;
         subcontrol-position: top left;
         left: 12px;
-        top: 2px;
-        padding: 0 6px;
+        top: 0px;
+        padding: 1px 8px;
+        background-color: {c['bg']};
         color: {c['text_dim']};
     }}
 

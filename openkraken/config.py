@@ -130,6 +130,9 @@ class LcdConfig:
     gif_path: str = ""  # last chosen gif (absolute path)
     sensor_style: str = "liquid_ring"  # see lcd_render.STYLES
     sensor_interval: float = 2.0  # seconds between sensor-screen pushes
+    #: Colour of the liquid-temperature arc on the ring (RGB 0-255). NZXT purple
+    #: by default; warn/crit temperatures still override it amber/red.
+    ring_color: tuple[int, int, int] = (124, 58, 237)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping."""
@@ -141,6 +144,7 @@ class LcdConfig:
             "gif_path": self.gif_path,
             "sensor_style": self.sensor_style,
             "sensor_interval": float(self.sensor_interval),
+            "ring_color": [int(c) for c in self.ring_color],
         }
 
     @classmethod
@@ -157,6 +161,13 @@ class LcdConfig:
             logger.warning("Invalid LCD orientation %r; using %d", orientation, base.orientation)
             orientation = base.orientation
 
+        ring_raw = d.get("ring_color")
+        if ring_raw is None:
+            ring_color = base.ring_color
+        else:
+            ring_norm = _normalize_colors([ring_raw], fallback=[base.ring_color])
+            ring_color = ring_norm[0] if ring_norm else base.ring_color
+
         return cls(
             mode=_as_str(d.get("mode"), base.mode),
             brightness=brightness,
@@ -165,6 +176,7 @@ class LcdConfig:
             gif_path=_as_str(d.get("gif_path"), base.gif_path),
             sensor_style=_as_str(d.get("sensor_style"), base.sensor_style),
             sensor_interval=_as_float(d.get("sensor_interval"), base.sensor_interval),
+            ring_color=ring_color,
         )
 
 

@@ -93,8 +93,12 @@ class SettingsPage(QWidget):
         inner.setContentsMargins(0, 0, 8, 0)  # right pad for the scrollbar
         inner.setSpacing(14)
         inner.addWidget(self._build_app_box())
-        inner.addWidget(self._build_device_box())
-        inner.addWidget(self._build_about_box())
+        # Device and About side by side to use the horizontal space.
+        columns = QHBoxLayout()
+        columns.setSpacing(14)
+        columns.addWidget(self._build_device_box(), stretch=1)
+        columns.addWidget(self._build_about_box(), stretch=1)
+        inner.addLayout(columns)
         inner.addStretch(1)
         scroll.setWidget(content)
         root.addWidget(scroll, stretch=1)

@@ -296,6 +296,10 @@ class ControlEngine(QThread):
         self._lcd_off_active: bool = False
         # Monotonic timestamp of the last sensor-screen push (0 == never).
         self._last_lcd_push: float = 0.0
+        # Re-assert window (monotonic deadline): after an LCD content change the
+        # firmware can repaint the LED ring to its default, so for a few seconds
+        # we re-stream the app's lighting each tick to keep the user's settings.
+        self._lighting_reassert_until: float = 0.0
         # Latest brightness / orientation we successfully pushed, for change detection.
         self._applied_brightness: int | None = None
         self._applied_orientation: int | None = None
@@ -639,6 +643,7 @@ class ControlEngine(QThread):
             fan_rpm=status.fan_rpm,
             cpu_vendor=self._sensors.cpu_vendor,
             gpu_vendor=self._sensors.gpu_vendor,
+            ring_color=tuple(self._lcd_cfg.ring_color),
         )
         try:
             path = lcd_render.render_to_file(self._lcd_cfg.sensor_style, data)
@@ -671,6 +676,14 @@ class ControlEngine(QThread):
         if not self._device.is_connected:
             return
         now = time.monotonic()
+        # During the re-assert window after an LCD content change, re-stream every
+        # channel (incl. fixed ones) so the firmware can't leave the ring on its
+        # default — this keeps the app's lighting when switching to the firmware
+        # liquid screen (item: "keep the lighting settings, don't reset").
+        if now < self._lighting_reassert_until:
+            for channel, state in self._lighting.items():
+                self._write_lighting_frame(channel, state, now)
+            return
         for channel, state in self._lighting.items():
             if not state.animated:
                 continue
@@ -697,6 +710,10 @@ class ControlEngine(QThread):
         now = time.monotonic()
         for channel, state in self._lighting.items():
             self._write_lighting_frame(channel, state, now)
+        # Keep re-asserting for a few seconds: the firmware can repaint the ring
+        # to its default shortly after an LCD content/mode change (esp. the
+        # switch to the firmware liquid screen).
+        self._lighting_reassert_until = now + 3.0
 
     def _write_lighting_frame(
         self, channel: str, state: _LightingState, now: float

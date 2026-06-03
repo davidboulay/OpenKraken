@@ -30,6 +30,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QButtonGroup,
+    QColorDialog,
     QComboBox,
     QDoubleSpinBox,
     QFileDialog,
@@ -231,6 +232,15 @@ class LcdPage(QWidget):
         self._interval_spin.setDecimals(1)
         self._interval_spin.setSuffix(" s")
         sform.addRow("Refresh", self._interval_spin)
+
+        # Liquid-ring colour (tints the rim arc on the ring/all-sensors styles).
+        self._ring_color: tuple[int, int, int] = (124, 58, 237)
+        self._ring_color_btn = QPushButton()
+        self._ring_color_btn.setFixedSize(48, 24)
+        self._ring_color_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._ring_color_btn.setToolTip("Liquid-ring colour (warn/crit still show amber/red)")
+        self._ring_color_btn.clicked.connect(self._pick_ring_color)
+        sform.addRow("Ring color", self._ring_color_btn)
         layout.addWidget(self._sensor_box)
 
         # --- static / gif sub-options ----------------------------------------
@@ -322,6 +332,8 @@ class LcdPage(QWidget):
         self._interval_spin.setValue(
             min(10.0, max(0.5, float(cfg.sensor_interval)))
         )
+        self._ring_color = tuple(int(c) for c in cfg.ring_color)
+        self._update_ring_color_swatch()
 
         self._bright_slider.setValue(int(cfg.brightness))
         self._bright_spin.setValue(int(cfg.brightness))
@@ -361,6 +373,20 @@ class LcdPage(QWidget):
         else:
             path = ""
         self._path_label.setText(path or "(none)")
+
+    def _update_ring_color_swatch(self) -> None:
+        r, g, b = self._ring_color
+        self._ring_color_btn.setStyleSheet(
+            f"background-color: rgb({r},{g},{b}); border: 1px solid #2a2d39; border-radius: 6px;"
+        )
+
+    def _pick_ring_color(self) -> None:
+        r, g, b = self._ring_color
+        chosen = QColorDialog.getColor(QColor(r, g, b), self, "Liquid-ring colour")
+        if chosen.isValid():
+            self._ring_color = (chosen.red(), chosen.green(), chosen.blue())
+            self._update_ring_color_swatch()
+            self._refresh_preview()
 
     # ------------------------------------------------------------------ slots
     def _on_mode_toggled(self, _button, checked: bool) -> None:
@@ -476,6 +502,7 @@ class LcdPage(QWidget):
             fan_rpm=getattr(status, "fan_rpm", None) if status else None,
             cpu_vendor=self._cpu_vendor,
             gpu_vendor=self._gpu_vendor,
+            ring_color=tuple(self._lcd_cfg.ring_color),
         )
 
     # ------------------------------------------------------------------ apply
@@ -490,6 +517,7 @@ class LcdPage(QWidget):
             gif_path=self._lcd_cfg.gif_path,
             sensor_style=self._current_style(),
             sensor_interval=float(self._interval_spin.value()),
+            ring_color=tuple(self._ring_color),
         )
 
     def _apply(self) -> None:
