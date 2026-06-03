@@ -31,6 +31,42 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+#: Name of the liquidctl driver logger that emits the (otherwise swallowed)
+#: LCD bucket-transfer failures we recover from.
+_DRIVER_LOGGER_NAME = "liquidctl.driver.kraken3"
+
+#: Plain (no-clear) re-upload attempts for transient HID-contention failures
+#: before resorting to a bucket clear, and total clear+retry attempts after that.
+_LCD_PLAIN_RETRIES = 4
+_LCD_CLEAR_RETRIES = 2
+
+
+class _BucketFailureWatcher(logging.Handler):
+    """Detects the driver's swallowed LCD bucket-transfer failures.
+
+    The kraken3 driver only *logs* "Failed to setup bucket for data transfer"
+    (and "Failed to switch active bucket") and then returns as if the upload
+    succeeded -- leaving an empty/garbage bucket on screen.  This handler flips a
+    flag the device wrapper checks after each upload so it can clear the buckets
+    and retry (see :meth:`KrakenDevice._set_screen`).  The device's bucket memory
+    fills after ~30 same-size frames and the driver's own exhaustion-reset is
+    unreliable on the 2024 Elite, so sensor mode goes permanently dark without
+    this recovery.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.failed = False
+
+    def reset(self) -> None:
+        self.failed = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        msg = record.getMessage()
+        if "Failed to setup bucket" in msg or "Failed to switch active bucket" in msg:
+            self.failed = True
+
+
 #: Vendor id for NZXT (all Kraken devices).
 _NZXT_VENDOR_ID = 0x1E71
 
@@ -212,6 +248,16 @@ class KrakenDevice:
         #: (no raw dump from a real 3012 exists yet).  ``None`` until a reply with
         #: the ``0x21 0x03`` prefix has been read.
         self.last_lighting_reply: list[int] | None = None
+        #: Watches the driver logger for swallowed LCD bucket failures so uploads
+        #: can self-heal (installed once, lazily, in :meth:`_set_screen`).
+        self._bucket_watcher: _BucketFailureWatcher | None = None
+
+    def _ensure_bucket_watcher(self) -> _BucketFailureWatcher:
+        """Install (once) and return the driver bucket-failure watcher."""
+        if self._bucket_watcher is None:
+            self._bucket_watcher = _BucketFailureWatcher()
+            logging.getLogger(_DRIVER_LOGGER_NAME).addHandler(self._bucket_watcher)
+        return self._bucket_watcher
 
     # --------------------------------------------------------------- discovery
     def connect(self) -> bool:
@@ -673,12 +719,33 @@ class KrakenDevice:
 
         We therefore only call :meth:`_mark_disconnected` for the I/O kind.
         """
+        # Image/GIF uploads can hit the swallowed bucket-transfer failure; watch
+        # for it so we can clear buckets and retry. Brightness/orientation/liquid
+        # don't use buckets, so they skip the watcher entirely.
+        is_data_upload = mode in ("static", "gif")
+        watcher = self._ensure_bucket_watcher() if is_data_upload else None
+
         with self._lock:
             if self._dev is None or not self._connected:
                 logger.warning("set_screen(%s): device not connected", mode)
                 return False
             try:
+                if watcher is not None:
+                    watcher.reset()
                 self._dev.set_screen("lcd", mode, value)
+                # The driver swallows bucket-transfer failures (it wrote to a
+                # bad bucket -> dark screen) and returns as if successful. Two
+                # causes, two remedies:
+                #   * transient HID contention (another process touching the
+                #     hidraw node) -- a plain re-upload usually clears it, and
+                #     costs no visible glitch;
+                #   * bucket-memory exhaustion (~every 30 same-size frames) --
+                #     needs an explicit _delete_all_buckets, which briefly shows
+                #     the firmware liquid screen, so we only do it as a last
+                #     resort after plain retries keep failing.
+                if watcher is not None and watcher.failed:
+                    if not self._retry_lcd_upload(mode, value, watcher):
+                        return False
                 logger.info("LCD set_screen mode=%s value=%r ok", mode, value)
                 return True
             except _RECOVERABLE_SCREEN_ERRORS as exc:
@@ -695,6 +762,36 @@ class KrakenDevice:
                 logger.exception("set_screen(lcd, %s, %r) failed", mode, value)
                 self._mark_disconnected()
                 return False
+
+    def _retry_lcd_upload(self, mode: str, value: Any, watcher: _BucketFailureWatcher) -> bool:
+        """Recover a failed LCD upload. Caller holds the lock and ``watcher.failed``.
+
+        First retries the upload as-is (cheap, no visible glitch) to ride out
+        transient HID contention; if those keep failing it's bucket exhaustion,
+        so clear all buckets (brief liquid screen) and retry from a clean slate.
+        Returns ``True`` once an upload succeeds, ``False`` if all attempts fail.
+        """
+        for attempt in range(1, _LCD_PLAIN_RETRIES + 1):
+            logger.debug("LCD %s: upload failed; plain retry %d/%d", mode, attempt, _LCD_PLAIN_RETRIES)
+            watcher.reset()
+            self._dev.set_screen("lcd", mode, value)
+            if not watcher.failed:
+                return True
+        for attempt in range(1, _LCD_CLEAR_RETRIES + 1):
+            logger.info(
+                "LCD %s: still failing after %d plain retries; clearing buckets (%d/%d)",
+                mode,
+                _LCD_PLAIN_RETRIES,
+                attempt,
+                _LCD_CLEAR_RETRIES,
+            )
+            self._dev._delete_all_buckets()  # noqa: SLF001
+            watcher.reset()
+            self._dev.set_screen("lcd", mode, value)
+            if not watcher.failed:
+                return True
+        logger.warning("LCD %s: upload still failing after plain + clear retries", mode)
+        return False
 
     def _clamp_duty(self, channel: str, duty: int) -> int:
         """Clamp ``duty`` to the limits of ``channel`` (defaults to fan limits)."""
