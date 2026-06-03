@@ -29,8 +29,41 @@ _LOGGER = logging.getLogger(__name__)
 REPO = "davidboulay/OpenKraken"
 _BRANCH = "main"
 _API_LATEST_COMMIT = f"https://api.github.com/repos/{REPO}/commits/{_BRANCH}"
+_API_LATEST_RELEASE = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_URL = f"https://github.com/{REPO}/releases"
 _TIMEOUT = 6.0
+
+
+def _get_json(url: str) -> dict | None:
+    req = urllib.request.Request(
+        url,
+        headers={"Accept": "application/vnd.github+json", "User-Agent": "OpenKraken-updater"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_TIMEOUT) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError, json.JSONDecodeError) as exc:
+        _LOGGER.info("update check: GitHub request failed (%s)", exc)
+        return None
+
+
+def _version_tuple(text: str) -> tuple[int, ...]:
+    """Parse 'v1.2.3' / '1.2.3' into a comparable tuple; () if unparsable."""
+    cleaned = (text or "").lstrip("vV").split("-")[0].split("+")[0]
+    parts = cleaned.split(".")
+    try:
+        return tuple(int(p) for p in parts if p != "")
+    except ValueError:
+        return ()
+
+
+def latest_release_version() -> str | None:
+    """Tag of the newest published GitHub release (without the 'v'), or None."""
+    payload = _get_json(_API_LATEST_RELEASE)
+    if not payload:
+        return None
+    tag = payload.get("tag_name")
+    return tag.lstrip("vV") if isinstance(tag, str) and tag else None
 
 
 @dataclass
@@ -114,17 +147,30 @@ def check_for_update() -> UpdateStatus:
 
     remote_short = remote[:7]
     if not is_git or local is None:
-        # We can see upstream but can't self-update this install layout.
+        # Not a git checkout (e.g. a .deb): we can't self-update, but we can
+        # still compare the installed version to the newest GitHub release.
+        from openkraken import __version__ as _installed
+
+        latest = latest_release_version()
+        if latest and _version_tuple(latest) > _version_tuple(_installed):
+            return UpdateStatus(
+                checked=True,
+                update_available=True,
+                can_apply=False,
+                local_rev=None,
+                remote_rev=latest,
+                message=(
+                    f"v{latest} is available (you have v{_installed}). Update via your "
+                    "package manager or download it from the releases page."
+                ),
+            )
         return UpdateStatus(
             checked=True,
             update_available=False,
             can_apply=False,
             local_rev=None,
-            remote_rev=remote_short,
-            message=(
-                "Installed from a package; update via your package manager or the "
-                "releases page."
-            ),
+            remote_rev=latest or remote_short,
+            message=f"OpenKraken v{_installed} is up to date.",
         )
 
     if local == remote:

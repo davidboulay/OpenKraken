@@ -1,0 +1,38 @@
+name: Release
+
+# Build the .deb and publish a GitHub release whenever a vX.Y.Z tag is pushed.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write   # needed to create the release and upload assets
+
+jobs:
+  build-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the .deb
+        run: |
+          chmod +x packaging/build-deb.sh
+          packaging/build-deb.sh
+
+      - name: Locate the artifact
+        id: deb
+        run: echo "path=$(ls packaging/dist/openkraken_*_amd64.deb | head -1)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish the GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: OpenKraken ${{ github.ref_name }}
+          generate_release_notes: true
+          files: ${{ steps.deb.outputs.path }}
