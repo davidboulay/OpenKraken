@@ -224,7 +224,9 @@ class LcdPage(QWidget):
             self._style_keys.append(key)
             self._style_combo.addItem(label)
         self._style_combo.currentIndexChanged.connect(self._refresh_preview)
+        self._style_combo.currentIndexChanged.connect(self._sync_ring_color_visibility)
         sform.addRow("Style", self._style_combo)
+        self._sensor_form = sform
 
         self._interval_spin = QDoubleSpinBox()
         self._interval_spin.setRange(0.5, 10.0)
@@ -334,6 +336,7 @@ class LcdPage(QWidget):
         )
         self._ring_color = tuple(int(c) for c in cfg.ring_color)
         self._update_ring_color_swatch()
+        self._sync_ring_color_visibility()
 
         self._bright_slider.setValue(int(cfg.brightness))
         self._bright_spin.setValue(int(cfg.brightness))
@@ -373,6 +376,14 @@ class LcdPage(QWidget):
         else:
             path = ""
         self._path_label.setText(path or "(none)")
+
+    #: Sensor styles that draw the liquid ring (so the ring-colour row applies).
+    _RING_STYLES = ("liquid_ring", "triple")
+
+    def _sync_ring_color_visibility(self) -> None:
+        """Show the ring-colour row only for styles that draw a ring."""
+        visible = self._current_style() in self._RING_STYLES
+        self._sensor_form.setRowVisible(self._ring_color_btn, visible)
 
     def _update_ring_color_swatch(self) -> None:
         r, g, b = self._ring_color

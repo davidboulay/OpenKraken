@@ -355,6 +355,7 @@ class ControlEngine(QThread):
             gif_path=cfg.gif_path,
             sensor_style=cfg.sensor_style,
             sensor_interval=cfg.sensor_interval,
+            ring_color=tuple(cfg.ring_color),
         )
         self._requests.put(lambda: self._do_apply_lcd(snapshot))
 
