@@ -583,13 +583,6 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.hide()
             self._update_show_hide_label()
-            if self._tray is not None:
-                self._tray.showMessage(
-                    "OpenKraken",
-                    "Still running in the tray. Right-click to quit.",
-                    theme.make_app_icon(),
-                    3_000,
-                )
             return
 
         if action == "background":
