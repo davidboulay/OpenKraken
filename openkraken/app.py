@@ -179,12 +179,33 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class _BucketSwitchNoiseFilter(logging.Filter):
+    """Drop liquidctl's recovered "Failed to switch active bucket" error.
+
+    On this device the LCD bucket-switch handshake intermittently logs this at
+    ERROR while a Wine HID client (e.g. an OpenDeck plugin) has the hidraw node
+    open, but the driver retries and the operation succeeds (measured: 0/60
+    functional failures).  OpenKraken still logs its own warning if a real LCD
+    push fails, so suppressing this intermediate noise loses no signal.  Kept
+    visible under --debug.
+    """
+
+    _NEEDLE = "Failed to switch active bucket"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return self._NEEDLE not in record.getMessage()
+
+
 def _configure_logging(debug: bool) -> None:
     level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(level=level, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
     # liquidctl can be chatty about missing hwmon; keep it quiet unless debugging.
     if not debug:
         logging.getLogger("liquidctl").setLevel(logging.WARNING)
+        # Suppress the recovered bucket-switch ERROR spam (see filter docstring).
+        logging.getLogger("liquidctl.driver.kraken3").addFilter(
+            _BucketSwitchNoiseFilter()
+        )
 
 
 def _install_sigint_handler(app: QApplication, engine: ControlEngine) -> QTimer:
