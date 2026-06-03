@@ -25,9 +25,11 @@ _LOGGER = logging.getLogger(__name__)
 
 _MARGIN_LEFT = 44.0
 _MARGIN_RIGHT = 12.0
-_MARGIN_TOP = 12.0
+# Top margin reserves a band above the plot for the legend chips so they no
+# longer overlap the plot's top gridline / value labels.
+_MARGIN_TOP = 28.0
 _MARGIN_BOTTOM = 22.0
-_LEGEND_TOP = 8.0
+_LEGEND_TOP = 7.0
 
 
 @dataclass
