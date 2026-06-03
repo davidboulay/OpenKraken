@@ -612,7 +612,7 @@ def _render_triple(data: LcdData) -> Image.Image:
     )
 
     # --- Liquid, large, centred and lifted up. ---
-    liquid_y = cy - 78
+    liquid_y = cy - 92
     # The OpenKraken droplet mark stands in for the "LIQUID" label.
     mark = _load_app_mark(target_h=46)
     if mark is not None:
@@ -646,9 +646,9 @@ def _render_triple(data: LcdData) -> Image.Image:
     side_label_font = _font(28)
     side_temp_font = _font(60)
     side_load_font = _font(28)
-    side_y = cy + 86
-    cpu_x = cx - 150
-    gpu_x = cx + 150
+    side_y = cy + 72
+    cpu_x = cx - 118
+    gpu_x = cx + 118
 
     def _side(x: float, label: str, accent: tuple[int, int, int], kind: str,
               temp: float | None, load: float | None, vendor: str | None) -> None:
@@ -689,7 +689,7 @@ def _render_triple(data: LcdData) -> Image.Image:
     # --- Pump + fan RPM footer row, well clear of the side block. ---
     foot_label_font = _font(22)
     foot_font = _font(28)
-    foot_y = cy + 190
+    foot_y = cy + 178
     pump_x = cx - 108
     fan_x = cx + 108
     _draw_text_anchored(draw, (pump_x, foot_y), "PUMP", foot_label_font, _TEXT_DIM, anchor="mm")

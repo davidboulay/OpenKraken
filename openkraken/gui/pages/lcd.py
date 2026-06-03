@@ -75,6 +75,9 @@ _PREVIEW_REFRESH_MS = 2000
 # Orientation combo entries: degrees.
 _ORIENTATIONS = [0, 90, 180, 270]
 
+#: Default liquid-ring colour (NZXT purple #7c3aed) used by the Reset button.
+_DEFAULT_RING_COLOR: tuple[int, int, int] = (124, 58, 237)
+
 
 class RoundPreview(QLabel):
     """A QLabel that displays a pixmap clipped to an inscribed circle."""
@@ -236,13 +239,23 @@ class LcdPage(QWidget):
         sform.addRow("Refresh", self._interval_spin)
 
         # Liquid-ring colour (tints the rim arc on the ring/all-sensors styles).
-        self._ring_color: tuple[int, int, int] = (124, 58, 237)
+        self._ring_color: tuple[int, int, int] = _DEFAULT_RING_COLOR
         self._ring_color_btn = QPushButton()
         self._ring_color_btn.setFixedSize(48, 24)
         self._ring_color_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._ring_color_btn.setToolTip("Liquid-ring colour (warn/crit still show amber/red)")
         self._ring_color_btn.clicked.connect(self._pick_ring_color)
-        sform.addRow("Ring color", self._ring_color_btn)
+        self._ring_reset_btn = QPushButton("Reset")
+        self._ring_reset_btn.setToolTip("Reset the ring colour to the default purple")
+        self._ring_reset_btn.clicked.connect(self._reset_ring_color)
+        self._ring_color_row = QWidget()
+        ring_row = QHBoxLayout(self._ring_color_row)
+        ring_row.setContentsMargins(0, 0, 0, 0)
+        ring_row.setSpacing(8)
+        ring_row.addWidget(self._ring_color_btn)
+        ring_row.addWidget(self._ring_reset_btn)
+        ring_row.addStretch(1)
+        sform.addRow("Ring color", self._ring_color_row)
         layout.addWidget(self._sensor_box)
 
         # --- static / gif sub-options ----------------------------------------
@@ -383,7 +396,13 @@ class LcdPage(QWidget):
     def _sync_ring_color_visibility(self) -> None:
         """Show the ring-colour row only for styles that draw a ring."""
         visible = self._current_style() in self._RING_STYLES
-        self._sensor_form.setRowVisible(self._ring_color_btn, visible)
+        self._sensor_form.setRowVisible(self._ring_color_row, visible)
+
+    def _reset_ring_color(self) -> None:
+        """Reset the liquid-ring colour to the default purple."""
+        self._ring_color = _DEFAULT_RING_COLOR
+        self._update_ring_color_swatch()
+        self._refresh_preview()
 
     def _update_ring_color_swatch(self) -> None:
         r, g, b = self._ring_color
