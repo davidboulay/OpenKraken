@@ -643,8 +643,10 @@ class ControlEngine(QThread):
         except Exception:  # pragma: no cover - rendering must not crash the loop
             _LOGGER.exception("failed to render LCD sensor frame")
             return
-        if not self._device.set_lcd_static(path):
-            _LOGGER.warning("failed to push LCD sensor frame")
+        # Double-buffered upload: flicker-free streaming (holds the last frame on
+        # a failed push) vs the one-shot set_lcd_static used elsewhere.
+        if not self._device.set_lcd_sensor_frame(path):
+            _LOGGER.debug("LCD sensor frame not pushed (held previous frame)")
             self._emit_connection(self._device.is_connected)
             return
         # The LCD upload disturbs the LED ring; repaint it (no-op if lighting off).

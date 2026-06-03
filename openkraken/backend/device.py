@@ -24,6 +24,7 @@ Design notes
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -34,6 +35,10 @@ logger = logging.getLogger(__name__)
 #: Name of the liquidctl driver logger that emits the (otherwise swallowed)
 #: LCD bucket-transfer failures we recover from.
 _DRIVER_LOGGER_NAME = "liquidctl.driver.kraken3"
+
+#: Total LCD bucket memory (in 1024-byte units), mirroring the driver's
+#: ``_LCD_TOTAL_MEMORY``; used to size the two double-buffer slots.
+_LCD_TOTAL_MEMORY = 24320
 
 #: Plain (no-clear) re-upload attempts for transient HID-contention failures
 #: before resorting to a bucket clear, and total clear+retry attempts after that.
@@ -262,6 +267,10 @@ class KrakenDevice:
         self._lcd_guard_active: bool = False
         #: Per-bucket result of the most recent ``_setup_bucket`` while guarding.
         self._lcd_setup_ok: dict[int, bool] = {}
+        #: Which of the two double-buffer LCD slots is currently displayed
+        #: (``None`` until the first sensor frame lands).  See
+        #: :meth:`set_lcd_sensor_frame`.
+        self._lcd_active_buffer: int | None = None
 
     def _ensure_bucket_watcher(self) -> _BucketFailureWatcher:
         """Install (once) and return the driver bucket-failure watcher."""
@@ -385,6 +394,8 @@ class KrakenDevice:
             self._connected = True
             self._description = str(getattr(chosen, "description", "") or "")
             self._install_lcd_switch_guard(chosen)
+            # Fresh device: no double-buffer slot is displayed yet.
+            self._lcd_active_buffer = None
             self._apply_init_status(init_status)
             logger.info(
                 "Connected to %s (fw=%s, brightness=%d%%, orientation=%d°)",
@@ -524,6 +535,96 @@ class KrakenDevice:
     def set_lcd_gif(self, gif_path: str) -> bool:
         """Upload an animated GIF to the LCD (blocking)."""
         return self._set_screen("gif", str(gif_path))
+
+    #: Names of the private liquidctl primitives the double-buffered sensor
+    #: uploader needs; absence (older/newer driver) falls back to set_lcd_static.
+    _DB_PRIMITIVES = (
+        "_prepare_static_file",
+        "_setup_bucket",
+        "_write_then_read",
+        "_bulk_write",
+        "_write",
+        "_switch_bucket",
+        "_delete_bucket",
+    )
+
+    def set_lcd_sensor_frame(self, image_path: str) -> bool:
+        """Upload one streamed sensor frame, flicker-free, via double-buffering.
+
+        Continuous frame streaming through the driver's ``set_screen`` glitches
+        the panel: it rotates through 16 buckets (exhausting memory ~every 30
+        frames, which forces a clear that flips to the firmware liquid screen),
+        and it switches the display to each freshly-allocated bucket even on a
+        failed/partial write.  Instead we keep TWO fixed buckets at fixed memory
+        offsets and ping-pong: write the *inactive* one fully, then switch to it
+        only when every step succeeded.  The displayed bucket is never deleted or
+        overwritten mid-stream, there is no rotation/exhaustion (so no clears, no
+        liquid flash), and a failed upload simply leaves the previous frame up.
+
+        Falls back to :meth:`set_lcd_static` if the driver lacks the private
+        primitives this relies on (it pins liquidctl, so they are present).
+        Returns ``True`` only when a new frame reached the panel.
+        """
+        with self._lock:
+            if self._dev is None or not self._connected:
+                logger.warning("set_lcd_sensor_frame: device not connected")
+                return False
+            dev = self._dev
+            if not all(hasattr(dev, n) for n in self._DB_PRIMITIVES) or (
+                getattr(dev, "bulk_device", None) is None
+            ):
+                logger.debug("double-buffer primitives unavailable; using set_lcd_static")
+                return self._set_screen("static", str(image_path))
+
+            try:
+                data = dev._prepare_static_file(str(image_path), getattr(dev, "orientation", 0))
+            except _RECOVERABLE_SCREEN_ERRORS as exc:
+                logger.warning("sensor frame: image prepare failed (%s)", exc)
+                return False
+            except Exception:
+                logger.exception("sensor frame: image prepare crashed")
+                return False
+
+            # Replicate the driver's static bulk-transfer framing (set_screen
+            # "static" -> _send_data with bulkInfo [0x02, 0,0,0] + len32).
+            bulk_info = [0x02, 0x0, 0x0, 0x0] + list(len(data).to_bytes(4, "little"))
+            header = [0x12, 0xFA, 0x01, 0xE8, 0xAB, 0xCD, 0xEF, 0x98, 0x76, 0x54, 0x32, 0x10] + bulk_info
+            data_size = math.ceil((len(header) + len(data)) / 1024)
+
+            # Two non-overlapping fixed regions; pick the inactive slot/offset.
+            target = 0 if self._lcd_active_buffer in (None, 1) else 1
+            mem_offset = 0 if target == 0 else data_size
+            if 2 * data_size >= _LCD_TOTAL_MEMORY:  # frame too big to double-buffer
+                logger.debug("frame too large for double-buffer; using set_lcd_static")
+                return self._set_screen("static", str(image_path))
+
+            try:
+                dev._write_then_read([0x36, 0x03])  # transfer preamble (per _send_data)
+                # Free only the INACTIVE target bucket (never the displayed one,
+                # so the panel keeps the current frame throughout).
+                dev._delete_bucket(target)
+                if not dev._setup_bucket(
+                    target,
+                    target + 1,
+                    list(mem_offset.to_bytes(2, "little")),
+                    list(data_size.to_bytes(2, "little")),
+                ):
+                    logger.debug("sensor frame: setup bucket %d failed; holding frame", target)
+                    return False
+                dev._write_then_read([0x36, 0x01, target])  # begin data transfer
+                dev._bulk_write(header)
+                for i in range(0, len(data), dev.bulk_buffer_size):
+                    dev._bulk_write(list(data[i : i + dev.bulk_buffer_size]))
+                dev._write([0x36, 0x02])  # end data transfer
+                if not dev._switch_bucket(target):
+                    logger.debug("sensor frame: switch to bucket %d failed; holding frame", target)
+                    return False
+                self._lcd_active_buffer = target
+                return True
+            except Exception:
+                logger.exception("sensor frame: bulk transfer failed; marking disconnected")
+                self._mark_disconnected()
+                return False
 
     def clear_lcd_media(self) -> bool:
         """Erase all media stored in the cooler's onboard LCD memory.
