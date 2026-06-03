@@ -13,20 +13,20 @@ rebooting into Windows.
 > Status: early but functional (`0.1.0`). Targets the Kraken 2024 Elite RGB
 > (USB `1e71:3012`) but works with any `KrakenZ3`-class cooler liquidctl supports.
 
-## Screenshot
+## Screenshots
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│  OPENKRAKEN   │   [ CPU ]  [ GPU ]  [ Liquid ]  [ Pump ]  [Fan]│
-│   Dashboard   │   ╭───╮    ╭───╮    ╭───╮    ╭───╮    ╭───╮     │
-│ > Cooling     │   │ 52│    │ 61│    │ 38│    │1860│   │ 983│    │
-│   LCD         │   ╰───╯    ╰───╯    ╰───╯    ╰───╯    ╰───╯     │
-│   Settings    │   ── temperatures ──────  ── speeds ─────────  │
-│               │   /\__/‾\___       ____/‾‾‾‾‾\___              │
-│ ● Kraken Elite│                                                │
-└──────────────────────────────────────────────────────────────┘
-```
-*(placeholder — drop a real screenshot here)*
+A rendered sensor screen running on the cooler's round LCD:
+
+![OpenKraken sensor screen on an NZXT Kraken 2024 Elite](docs/images/cooler.png)
+
+| Dashboard | Cooling |
+| --- | --- |
+| ![Dashboard](docs/images/dashboard.png) | ![Cooling curves](docs/images/cooling.png) |
+| **LCD** | **Lighting** |
+| ![LCD control](docs/images/lcd.png) | ![RGB lighting](docs/images/lighting.png) |
+
+> The AMD / NVIDIA marks on the LCD sensor screen are user-supplied logo files
+> (see *Custom vendor logos* above); OpenKraken ships none.
 
 ## Features
 
