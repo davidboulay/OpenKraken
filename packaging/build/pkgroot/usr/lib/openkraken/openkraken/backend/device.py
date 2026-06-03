@@ -24,12 +24,56 @@ Design notes
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+#: Name of the liquidctl driver logger that emits the (otherwise swallowed)
+#: LCD bucket-transfer failures we recover from.
+_DRIVER_LOGGER_NAME = "liquidctl.driver.kraken3"
+
+#: Total LCD bucket memory (in 1024-byte units), mirroring the driver's
+#: ``_LCD_TOTAL_MEMORY``; used to size the two double-buffer slots.
+_LCD_TOTAL_MEMORY = 24320
+
+#: Plain (no-clear) re-upload attempts for transient HID-contention failures
+#: before resorting to a bucket clear, and total clear+retry attempts after that.
+#: Kept small: each plain retry consumes a fresh bucket, so over-retrying just
+#: hastens memory exhaustion (and its clear). The switch guard already keeps a
+#: failed frame off-screen, so a skipped frame merely holds the last good image.
+_LCD_PLAIN_RETRIES = 2
+_LCD_CLEAR_RETRIES = 2
+
+
+class _BucketFailureWatcher(logging.Handler):
+    """Detects the driver's swallowed LCD bucket-transfer failures.
+
+    The kraken3 driver only *logs* "Failed to setup bucket for data transfer"
+    (and "Failed to switch active bucket") and then returns as if the upload
+    succeeded -- leaving an empty/garbage bucket on screen.  This handler flips a
+    flag the device wrapper checks after each upload so it can clear the buckets
+    and retry (see :meth:`KrakenDevice._set_screen`).  The device's bucket memory
+    fills after ~30 same-size frames and the driver's own exhaustion-reset is
+    unreliable on the 2024 Elite, so sensor mode goes permanently dark without
+    this recovery.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.ERROR)
+        self.failed = False
+
+    def reset(self) -> None:
+        self.failed = False
+
+    def emit(self, record: logging.LogRecord) -> None:
+        msg = record.getMessage()
+        if "Failed to setup bucket" in msg or "Failed to switch active bucket" in msg:
+            self.failed = True
+
 
 #: Vendor id for NZXT (all Kraken devices).
 _NZXT_VENDOR_ID = 0x1E71
@@ -212,6 +256,74 @@ class KrakenDevice:
         #: (no raw dump from a real 3012 exists yet).  ``None`` until a reply with
         #: the ``0x21 0x03`` prefix has been read.
         self.last_lighting_reply: list[int] | None = None
+        #: Watches the driver logger for swallowed LCD bucket failures so uploads
+        #: can self-heal (installed once, lazily, in :meth:`_set_screen`).
+        self._bucket_watcher: _BucketFailureWatcher | None = None
+        #: While True (set only around image/GIF uploads), the driver's LCD
+        #: bucket-switch is gated so a contention-failed frame never reaches the
+        #: panel: the firmware-liquid switch the driver uses for its memory reset
+        #: is suppressed, and switching to a bucket whose setup failed is refused
+        #: (the panel holds the last good frame). See :meth:`_install_lcd_switch_guard`.
+        self._lcd_guard_active: bool = False
+        #: Per-bucket result of the most recent ``_setup_bucket`` while guarding.
+        self._lcd_setup_ok: dict[int, bool] = {}
+        #: Which of the two double-buffer LCD slots is currently displayed
+        #: (``None`` until the first sensor frame lands).  See
+        #: :meth:`set_lcd_sensor_frame`.
+        self._lcd_active_buffer: int | None = None
+
+    def _ensure_bucket_watcher(self) -> _BucketFailureWatcher:
+        """Install (once) and return the driver bucket-failure watcher."""
+        if self._bucket_watcher is None:
+            self._bucket_watcher = _BucketFailureWatcher()
+            logging.getLogger(_DRIVER_LOGGER_NAME).addHandler(self._bucket_watcher)
+        return self._bucket_watcher
+
+    def _install_lcd_switch_guard(self, dev: Any) -> None:
+        """Wrap the driver's bucket setup/switch so a bad frame never displays.
+
+        The kraken3 image-upload path (``_send_data``) switches the panel to the
+        freshly-written bucket even when ``_setup_bucket`` failed (HID contention
+        wrote nothing valid) -- which flashes the firmware screen mid-stream. We
+        wrap both primitives once: while ``_lcd_guard_active`` (set only around
+        image/GIF uploads) the wrapper records each setup result and refuses to
+        switch to a *data* bucket whose setup failed, so the panel holds the last
+        good frame until a retry lands. The driver's memory-reset liquid switch
+        (mode ``0x2``) is deliberately NOT blocked -- it is required to free the
+        active bucket during a clear. Outside guarded uploads (e.g. an explicit
+        liquid-mode request) both pass straight through. No-op if the private
+        primitives are absent.
+        """
+        if getattr(dev, "_ok_switch_guard_installed", False):
+            return
+        if not (hasattr(dev, "_setup_bucket") and hasattr(dev, "_switch_bucket")):
+            logger.debug("LCD switch guard not installed: driver primitives absent")
+            return
+        orig_setup = dev._setup_bucket
+        orig_switch = dev._switch_bucket
+
+        def guarded_setup(start_index, end_index, mem_start, mem_size):
+            ok = orig_setup(start_index, end_index, mem_start, mem_size)
+            if self._lcd_guard_active:
+                self._lcd_setup_ok[start_index] = bool(ok)
+            return ok
+
+        def guarded_switch(bucket_index, mode=0x4):
+            # NB: we must NOT suppress the mode 0x2 (liquid) switch -- the driver
+            # uses it inside _delete_all_buckets to move the panel off the active
+            # data bucket so it can be freed; blocking it leaves memory full and
+            # every later upload fails (permanent dark). We only refuse switching
+            # to a *data* bucket whose setup failed, so a contention-failed frame
+            # holds the last good image instead of flashing on screen.
+            if self._lcd_guard_active and mode != 0x2:
+                if not self._lcd_setup_ok.get(bucket_index, True):
+                    return False
+            return orig_switch(bucket_index, mode)
+
+        dev._setup_bucket = guarded_setup
+        dev._switch_bucket = guarded_switch
+        dev._ok_switch_guard_installed = True
+        logger.debug("LCD switch guard installed")
 
     # --------------------------------------------------------------- discovery
     def connect(self) -> bool:
@@ -281,6 +393,9 @@ class KrakenDevice:
             self._dev = chosen
             self._connected = True
             self._description = str(getattr(chosen, "description", "") or "")
+            self._install_lcd_switch_guard(chosen)
+            # Fresh device: no double-buffer slot is displayed yet.
+            self._lcd_active_buffer = None
             self._apply_init_status(init_status)
             logger.info(
                 "Connected to %s (fw=%s, brightness=%d%%, orientation=%d°)",
@@ -420,6 +535,122 @@ class KrakenDevice:
     def set_lcd_gif(self, gif_path: str) -> bool:
         """Upload an animated GIF to the LCD (blocking)."""
         return self._set_screen("gif", str(gif_path))
+
+    #: Names of the private liquidctl primitives the double-buffered sensor
+    #: uploader needs; absence (older/newer driver) falls back to set_lcd_static.
+    _DB_PRIMITIVES = (
+        "_prepare_static_file",
+        "_setup_bucket",
+        "_write_then_read",
+        "_bulk_write",
+        "_write",
+        "_switch_bucket",
+        "_delete_bucket",
+    )
+
+    def set_lcd_sensor_frame(self, image_path: str) -> bool:
+        """Upload one streamed sensor frame, flicker-free, via double-buffering.
+
+        Continuous frame streaming through the driver's ``set_screen`` glitches
+        the panel: it rotates through 16 buckets (exhausting memory ~every 30
+        frames, which forces a clear that flips to the firmware liquid screen),
+        and it switches the display to each freshly-allocated bucket even on a
+        failed/partial write.  Instead we keep TWO fixed buckets at fixed memory
+        offsets and ping-pong: write the *inactive* one fully, then switch to it
+        only when every step succeeded.  The displayed bucket is never deleted or
+        overwritten mid-stream, there is no rotation/exhaustion (so no clears, no
+        liquid flash), and a failed upload simply leaves the previous frame up.
+
+        Falls back to :meth:`set_lcd_static` if the driver lacks the private
+        primitives this relies on (it pins liquidctl, so they are present).
+        Returns ``True`` only when a new frame reached the panel.
+        """
+        with self._lock:
+            if self._dev is None or not self._connected:
+                logger.warning("set_lcd_sensor_frame: device not connected")
+                return False
+            dev = self._dev
+            if not all(hasattr(dev, n) for n in self._DB_PRIMITIVES) or (
+                getattr(dev, "bulk_device", None) is None
+            ):
+                logger.debug("double-buffer primitives unavailable; using set_lcd_static")
+                return self._set_screen("static", str(image_path))
+
+            try:
+                data = dev._prepare_static_file(str(image_path), getattr(dev, "orientation", 0))
+            except _RECOVERABLE_SCREEN_ERRORS as exc:
+                logger.warning("sensor frame: image prepare failed (%s)", exc)
+                return False
+            except Exception:
+                logger.exception("sensor frame: image prepare crashed")
+                return False
+
+            # Replicate the driver's static bulk-transfer framing (set_screen
+            # "static" -> _send_data with bulkInfo [0x02, 0,0,0] + len32).
+            bulk_info = [0x02, 0x0, 0x0, 0x0] + list(len(data).to_bytes(4, "little"))
+            header = [0x12, 0xFA, 0x01, 0xE8, 0xAB, 0xCD, 0xEF, 0x98, 0x76, 0x54, 0x32, 0x10] + bulk_info
+            data_size = math.ceil((len(header) + len(data)) / 1024)
+
+            # Two non-overlapping fixed regions; pick the inactive slot/offset.
+            target = 0 if self._lcd_active_buffer in (None, 1) else 1
+            mem_offset = 0 if target == 0 else data_size
+            if 2 * data_size >= _LCD_TOTAL_MEMORY:  # frame too big to double-buffer
+                logger.debug("frame too large for double-buffer; using set_lcd_static")
+                return self._set_screen("static", str(image_path))
+
+            try:
+                dev._write_then_read([0x36, 0x03])  # transfer preamble (per _send_data)
+                # Free only the INACTIVE target bucket (never the displayed one,
+                # so the panel keeps the current frame throughout).
+                dev._delete_bucket(target)
+                if not dev._setup_bucket(
+                    target,
+                    target + 1,
+                    list(mem_offset.to_bytes(2, "little")),
+                    list(data_size.to_bytes(2, "little")),
+                ):
+                    logger.debug("sensor frame: setup bucket %d failed; holding frame", target)
+                    return False
+                dev._write_then_read([0x36, 0x01, target])  # begin data transfer
+                dev._bulk_write(header)
+                for i in range(0, len(data), dev.bulk_buffer_size):
+                    dev._bulk_write(list(data[i : i + dev.bulk_buffer_size]))
+                dev._write([0x36, 0x02])  # end data transfer
+                if not dev._switch_bucket(target):
+                    logger.debug("sensor frame: switch to bucket %d failed; holding frame", target)
+                    return False
+                self._lcd_active_buffer = target
+                return True
+            except Exception:
+                logger.exception("sensor frame: bulk transfer failed; marking disconnected")
+                self._mark_disconnected()
+                return False
+
+    def clear_lcd_media(self) -> bool:
+        """Erase all media stored in the cooler's onboard LCD memory.
+
+        Uploaded images/GIFs persist in the device's media buckets and the
+        firmware replays the last one standalone (during boot, before any host
+        software runs).  This deletes every bucket via the driver's
+        ``_delete_all_buckets`` (which first switches the screen to the
+        firmware liquid mode), so subsequent boots show the firmware default
+        instead of stale media.  Callers should re-apply the configured LCD
+        mode afterwards.
+        """
+        with self._lock:
+            if self._dev is None or not self._connected:
+                logger.warning("clear_lcd_media: device not connected")
+                return False
+            try:
+                # Private driver API (no public equivalent); pinned liquidctl
+                # version in the venv makes this dependable.
+                self._dev._delete_all_buckets()  # noqa: SLF001
+                logger.info("LCD media buckets cleared")
+                return True
+            except Exception:
+                logger.exception("clear_lcd_media failed")
+                self._mark_disconnected()
+                return False
 
     # ------------------------------------------------------------ LED lighting
     def query_lighting_info(self) -> LightingInfo | None:
@@ -647,12 +878,36 @@ class KrakenDevice:
 
         We therefore only call :meth:`_mark_disconnected` for the I/O kind.
         """
+        # Image/GIF uploads can hit the swallowed bucket-transfer failure; watch
+        # for it so we can clear buckets and retry. Brightness/orientation/liquid
+        # don't use buckets, so they skip the watcher entirely.
+        is_data_upload = mode in ("static", "gif")
+        watcher = self._ensure_bucket_watcher() if is_data_upload else None
+
         with self._lock:
             if self._dev is None or not self._connected:
                 logger.warning("set_screen(%s): device not connected", mode)
                 return False
             try:
+                if is_data_upload:
+                    # Gate the driver's bucket switch so a contention-failed frame
+                    # holds the last good image instead of flashing the firmware
+                    # screen (see _install_lcd_switch_guard).
+                    self._lcd_guard_active = True
+                    self._lcd_setup_ok.clear()
+                if watcher is not None:
+                    watcher.reset()
                 self._dev.set_screen("lcd", mode, value)
+                # The driver swallows bucket-transfer failures (the switch guard
+                # kept the bad frame off-screen, so the panel held its last good
+                # image) and returns as if successful. Recover the content:
+                #   * transient HID contention -- a plain re-upload usually lands;
+                #   * bucket-memory exhaustion (~every 30 frames) -- clear buckets
+                #     and retry (the guard suppresses the liquid switch, so even
+                #     this is flash-free).
+                if watcher is not None and watcher.failed:
+                    if not self._retry_lcd_upload(mode, value, watcher):
+                        return False
                 logger.info("LCD set_screen mode=%s value=%r ok", mode, value)
                 return True
             except _RECOVERABLE_SCREEN_ERRORS as exc:
@@ -669,6 +924,38 @@ class KrakenDevice:
                 logger.exception("set_screen(lcd, %s, %r) failed", mode, value)
                 self._mark_disconnected()
                 return False
+            finally:
+                self._lcd_guard_active = False
+
+    def _retry_lcd_upload(self, mode: str, value: Any, watcher: _BucketFailureWatcher) -> bool:
+        """Recover a failed LCD upload. Caller holds the lock and ``watcher.failed``.
+
+        First retries the upload as-is (cheap, no visible glitch) to ride out
+        transient HID contention; if those keep failing it's bucket exhaustion,
+        so clear all buckets (brief liquid screen) and retry from a clean slate.
+        Returns ``True`` once an upload succeeds, ``False`` if all attempts fail.
+        """
+        for attempt in range(1, _LCD_PLAIN_RETRIES + 1):
+            logger.debug("LCD %s: upload failed; plain retry %d/%d", mode, attempt, _LCD_PLAIN_RETRIES)
+            watcher.reset()
+            self._dev.set_screen("lcd", mode, value)
+            if not watcher.failed:
+                return True
+        for attempt in range(1, _LCD_CLEAR_RETRIES + 1):
+            logger.info(
+                "LCD %s: still failing after %d plain retries; clearing buckets (%d/%d)",
+                mode,
+                _LCD_PLAIN_RETRIES,
+                attempt,
+                _LCD_CLEAR_RETRIES,
+            )
+            self._dev._delete_all_buckets()  # noqa: SLF001
+            watcher.reset()
+            self._dev.set_screen("lcd", mode, value)
+            if not watcher.failed:
+                return True
+        logger.warning("LCD %s: upload still failing after plain + clear retries", mode)
+        return False
 
     def _clamp_duty(self, channel: str, duty: int) -> int:
         """Clamp ``duty`` to the limits of ``channel`` (defaults to fan limits)."""

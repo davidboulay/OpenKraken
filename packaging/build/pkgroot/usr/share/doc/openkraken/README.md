@@ -43,9 +43,15 @@ rebooting into Windows.
 - **LCD screen control** for the 640×640 round display:
   - Firmware liquid-temp screen
   - Live **sensor screens** rendered on the host and uploaded over USB
-    (multiple styles)
+    (multiple styles), with a configurable liquid-ring colour and
+    auto-detected CPU/GPU **vendor badges** (AMD / Intel / NVIDIA)
   - **Static images** and **animated GIFs**
   - Brightness, orientation (0/90/180/270°), and a software "off"
+
+  *Custom vendor logos:* the sensor screens show a stylised vendor wordmark by
+  default. To use official logo artwork instead, drop your own RGBA PNGs at
+  `~/.config/openkraken/logos/{amd,intel,nvidia}.png` — OpenKraken ships no
+  trademarked logos.
 - **RGB lighting** (off by default) for the 24-LED pump ring and the bundled
   RGB Core fan chain: solid colours plus host-streamed Breathing / Color cycle /
   Spectrum effects, with per-channel brightness. The wire protocol was

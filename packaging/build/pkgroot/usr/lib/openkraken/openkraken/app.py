@@ -19,7 +19,7 @@ from typing import Callable
 
 from PyQt6.QtCore import QTimer
 from PyQt6.QtNetwork import QAbstractSocket, QLocalServer, QLocalSocket
-from PyQt6.QtWidgets import QApplication, QSystemTrayIcon
+from PyQt6.QtWidgets import QApplication
 
 from openkraken import __version__
 from openkraken.backend.device import KrakenDevice
@@ -179,12 +179,33 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+class _BucketSwitchNoiseFilter(logging.Filter):
+    """Drop liquidctl's recovered "Failed to switch active bucket" error.
+
+    On this device the LCD bucket-switch handshake intermittently logs this at
+    ERROR while a Wine HID client (e.g. an OpenDeck plugin) has the hidraw node
+    open, but the driver retries and the operation succeeds (measured: 0/60
+    functional failures).  OpenKraken still logs its own warning if a real LCD
+    push fails, so suppressing this intermediate noise loses no signal.  Kept
+    visible under --debug.
+    """
+
+    _NEEDLE = "Failed to switch active bucket"
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return self._NEEDLE not in record.getMessage()
+
+
 def _configure_logging(debug: bool) -> None:
     level = logging.DEBUG if debug else logging.INFO
     logging.basicConfig(level=level, format=_LOG_FORMAT, datefmt=_LOG_DATEFMT)
     # liquidctl can be chatty about missing hwmon; keep it quiet unless debugging.
     if not debug:
         logging.getLogger("liquidctl").setLevel(logging.WARNING)
+        # Suppress the recovered bucket-switch ERROR spam (see filter docstring).
+        logging.getLogger("liquidctl.driver.kraken3").addFilter(
+            _BucketSwitchNoiseFilter()
+        )
 
 
 def _install_sigint_handler(app: QApplication, engine: ControlEngine) -> QTimer:
@@ -272,15 +293,22 @@ def main(argv: list[str] | None = None) -> int:
         app.aboutToQuit.connect(instance_server.close)
 
     # Decide visibility before starting the engine so we don't flash the window.
-    tray_available = QSystemTrayIcon.isSystemTrayAvailable()
-    if start_minimized and tray_available:
-        _LOGGER.info("Starting minimized to tray.")
+    # When minimized is requested the window stays hidden unconditionally: the
+    # tray icon is created by MainWindow as soon as the SNI watcher appears on
+    # the session bus, and the window is always reachable by relaunching
+    # (single-instance activation).
+    #
+    # IMPORTANT: do NOT call QSystemTrayIcon.isSystemTrayAvailable() here. Qt
+    # computes "should use the D-Bus tray" ONCE per process at first use; at
+    # login this code can run before the panel registers the watcher, which
+    # would poison the cached answer to False for the process lifetime and
+    # break tray creation forever (observed on COSMIC, journal 2026-06-02).
+    if start_minimized:
+        _LOGGER.info(
+            "Starting minimized; tray icon appears once the panel's tray "
+            "host is up. Relaunch OpenKraken to open the window."
+        )
     else:
-        if start_minimized and not tray_available:
-            _LOGGER.warning(
-                "--minimized requested but no system tray is available; "
-                "showing the window instead."
-            )
         window.show()
 
     # Start the engine only after the window's signals are connected so the

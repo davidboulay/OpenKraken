@@ -31,6 +31,8 @@ produces ``None`` and a :meth:`rescan` re-discovers everything.
 from __future__ import annotations
 
 import logging
+import shutil
+import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -127,7 +129,44 @@ class SystemSensors:
         self._prev_cpu_total: int | None = None
         self._prev_cpu_idle: int | None = None
 
+        # Static hardware-vendor tags ("amd"/"intel"/"nvidia"/None), detected
+        # once; drive the per-vendor badges on the LCD sensor screens.
+        self.cpu_vendor: str | None = None
+        self.gpu_vendor: str | None = None
+        #: Cached ``nvidia-smi`` path ("" = absent, None = not yet probed).
+        self._nvidia_smi: str | None = None
+        self._detect_vendors()
+
         self.rescan()
+
+    def _detect_vendors(self) -> None:
+        """Best-effort detect CPU and GPU vendors (never raises)."""
+        try:
+            cpuinfo = Path("/proc/cpuinfo").read_text(encoding="ascii", errors="replace")
+            if "AuthenticAMD" in cpuinfo:
+                self.cpu_vendor = "amd"
+            elif "GenuineIntel" in cpuinfo:
+                self.cpu_vendor = "intel"
+        except OSError:
+            pass
+
+        # GPU vendor from the PCI vendor id of any DRM card (0x1002 AMD,
+        # 0x10de NVIDIA, 0x8086 Intel); prefer a discrete AMD/NVIDIA card over
+        # an Intel iGPU when both are present.
+        pci_to_vendor = {"0x1002": "amd", "0x10de": "nvidia", "0x8086": "intel"}
+        found: list[str] = []
+        try:
+            for card in sorted(Path("/sys/class/drm").glob("card[0-9]*")):
+                vid = _read_text(card / "device" / "vendor")
+                v = pci_to_vendor.get((vid or "").lower())
+                if v and v not in found:
+                    found.append(v)
+        except OSError:
+            pass
+        for preferred in ("nvidia", "amd", "intel"):
+            if preferred in found:
+                self.gpu_vendor = preferred
+                break
 
     # ------------------------------------------------------------------ #
     # Discovery
@@ -274,10 +313,16 @@ class SystemSensors:
         cpu_temp = self._read_cpu_temp()
         cpu_load = self._read_cpu_load()
         cpu_freq = self._read_cpu_freq_mhz()
-        gpu_temp = self._read_gpu_temp()
-        gpu_load = self._read_gpu_load()
-        vram_used, vram_total = self._read_gpu_vram_mb()
-        gpu_power = self._read_gpu_power_w()
+        # Prefer the discrete NVIDIA GPU (via nvidia-smi) when present so the
+        # readings match the NVIDIA badge; otherwise use the amdgpu hwmon.
+        nv = self._read_nvidia() if self.gpu_vendor == "nvidia" else None
+        if nv is not None:
+            gpu_temp, gpu_load, vram_used, vram_total, gpu_power = nv
+        else:
+            gpu_temp = self._read_gpu_temp()
+            gpu_load = self._read_gpu_load()
+            vram_used, vram_total = self._read_gpu_vram_mb()
+            gpu_power = self._read_gpu_power_w()
         ram_used, ram_total = self._read_ram_gb()
 
         return SystemSnapshot(
@@ -301,6 +346,47 @@ class SystemSensors:
         if millidegrees is None:
             return None
         return millidegrees / 1000.0
+
+    def _read_nvidia(
+        self,
+    ) -> tuple[float | None, float | None, float | None, float | None, float | None] | None:
+        """Query the NVIDIA GPU via ``nvidia-smi``; return metrics or ``None``.
+
+        Returns ``(temp_c, load_pct, vram_used_mb, vram_total_mb, power_w)``.
+        Cheap and best-effort: a missing binary, timeout, or unparsable line all
+        yield ``None`` (the caller falls back to the amdgpu hwmon). Never raises.
+        """
+        if self._nvidia_smi is None:
+            self._nvidia_smi = shutil.which("nvidia-smi") or ""
+        if not self._nvidia_smi:
+            return None
+        try:
+            out = subprocess.run(
+                [
+                    self._nvidia_smi,
+                    "--query-gpu=temperature.gpu,utilization.gpu,memory.used,memory.total,power.draw",
+                    "--format=csv,noheader,nounits",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=2.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if out.returncode != 0 or not out.stdout.strip():
+            return None
+        # First GPU line only.
+        fields = [f.strip() for f in out.stdout.strip().splitlines()[0].split(",")]
+        if len(fields) < 5:
+            return None
+
+        def _f(idx: int) -> float | None:
+            try:
+                return float(fields[idx])
+            except (ValueError, IndexError):
+                return None
+
+        return (_f(0), _f(1), _f(2), _f(3), _f(4))
 
     def _read_gpu_temp(self) -> float | None:
         if self._gpu_temp_path is None:

@@ -13,11 +13,17 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
+
+try:  # QtDBus is Linux-only but always present in the PyQt6 builds we target.
+    from PyQt6.QtDBus import QDBusConnection, QDBusServiceWatcher
+
+    _HAS_QTDBUS = True
+except ImportError:  # pragma: no cover - exotic builds without QtDBus
+    _HAS_QTDBUS = False
 from PyQt6.QtGui import (
     QAction,
     QCloseEvent,
-    QFontMetrics,
     QIcon,
     QKeySequence,
     QShortcut,
@@ -143,13 +149,21 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(12, 18, 12, 14)
         layout.setSpacing(6)
 
-        # --- Title block -----------------------------------------------------
-        title = QLabel("OPEN", sidebar)
-        title.setObjectName("appTitle")
-        subtitle = QLabel("KRAKEN", sidebar)
-        subtitle.setObjectName("appTitleAccent")
-        layout.addWidget(title)
-        layout.addWidget(subtitle)
+        # --- Title block: app logo + wordmark ---------------------------------
+        # Wordmark only -- the droplet already shows in the window titlebar /
+        # taskbar (setWindowIcon), so a second one here just duplicated it.
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        wordmark = QLabel(sidebar)
+        wordmark.setObjectName("appTitle")
+        wordmark.setTextFormat(Qt.TextFormat.RichText)
+        wordmark.setText(
+            f'<span style="color:{theme.COLORS["text"]};">Open</span>'
+            f'<span style="color:{theme.COLORS["accent"]};">Kraken</span>'
+        )
+        title_row.addWidget(wordmark)
+        title_row.addStretch(1)
+        layout.addLayout(title_row)
         layout.addSpacing(18)
 
         # --- Navigation buttons ---------------------------------------------
@@ -174,6 +188,9 @@ class MainWindow(QMainWindow):
         self._conn_pill.setObjectName("connPill")
         self._conn_pill.setProperty("connected", False)
         self._conn_pill.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # Long model names ("NZXT Kraken 2024 Elite RGB") wrap to a second
+        # line instead of being elided — the user must see the full name.
+        self._conn_pill.setWordWrap(True)
         layout.addWidget(self._conn_pill)
 
         return sidebar
@@ -192,19 +209,125 @@ class MainWindow(QMainWindow):
 
         return self._stack
 
-    def _build_tray(self) -> None:
-        """Create the system tray icon if a tray is available.
+    #: D-Bus name of the StatusNotifierItem watcher provided by the panel.
+    _SNI_SERVICE = "org.kde.StatusNotifierWatcher"
+    #: Settle delay (ms) between the watcher appearing on the bus and creating
+    #: the icon, giving the applet time to register its host side.
+    _TRAY_CREATE_DELAY_MS = 1000
+    #: Fallback polling cadence, used only when QtDBus is unavailable.
+    _TRAY_RETRY_INTERVAL_MS = 2000
+    _TRAY_RETRY_MAX_ATTEMPTS = 90
 
-        On COSMIC/Wayland an SNI host may or may not be exposed; when it is
-        unavailable the window simply runs without a tray and close-to-tray is
-        treated as a plain close.
+    def _build_tray(self) -> None:
+        """Create the tray icon as soon as (and whenever) a tray host exists.
+
+        Two hard-won rules drive this design (observed on COSMIC, 2026-06-02):
+
+        1. ``QSystemTrayIcon.isSystemTrayAvailable()`` must NEVER be called
+           before the panel's SNI watcher is on the bus — Qt caches the answer
+           of its first "should we use the D-Bus tray" check for the process
+           lifetime, so one early call breaks tray creation forever. We query
+           the session bus directly instead (no cache).
+        2. The panel applet can restart mid-session, silently dropping every
+           registered item. A ``QDBusServiceWatcher`` on the watcher name lets
+           us recreate the icon whenever a new host registers.
         """
         self._tray: QSystemTrayIcon | None = None
+        self._tray_retry_attempts = 0
+        self._tray_retry_timer: QTimer | None = None
+        self._sni_watcher = None
 
-        if not QSystemTrayIcon.isSystemTrayAvailable():
-            _LOGGER.info("System tray not available; running without tray icon.")
+        bus = None
+        if _HAS_QTDBUS:
+            bus = QDBusConnection.sessionBus()
+            if not bus.isConnected():
+                bus = None
+        if bus is None:
+            # Last resort for exotic setups: poll Qt's own check. Unreliable
+            # at login (see rule 1) but better than nothing.
+            _LOGGER.info("QtDBus unavailable; falling back to polled tray detection.")
+            timer = QTimer(self)
+            timer.setInterval(self._TRAY_RETRY_INTERVAL_MS)
+            timer.timeout.connect(self._retry_tray)
+            timer.start()
+            self._tray_retry_timer = timer
             return
 
+        watcher = QDBusServiceWatcher(
+            self._SNI_SERVICE,
+            bus,
+            QDBusServiceWatcher.WatchModeFlag.WatchForOwnerChange,
+            self,
+        )
+        watcher.serviceOwnerChanged.connect(self._on_sni_owner_changed)
+        self._sni_watcher = watcher
+
+        if bus.interface().isServiceRegistered(self._SNI_SERVICE).value():
+            self._create_tray()
+        else:
+            _LOGGER.info(
+                "No tray host on the session bus yet; the tray icon will be "
+                "created the moment one registers."
+            )
+
+    def _on_sni_owner_changed(self, service: str, old_owner: str, new_owner: str) -> None:
+        """React to the tray host (dis)appearing or being replaced."""
+        if new_owner:
+            _LOGGER.info(
+                "Tray host %s registered (owner %s); creating tray icon in %d ms.",
+                service,
+                new_owner,
+                self._TRAY_CREATE_DELAY_MS,
+            )
+            QTimer.singleShot(self._TRAY_CREATE_DELAY_MS, self._recreate_tray)
+        else:
+            _LOGGER.info("Tray host %s vanished; dropping tray icon until it returns.", service)
+            self._drop_tray()
+
+    def _recreate_tray(self) -> None:
+        """(Re)create the tray icon after the settle delay, if a host remains."""
+        self._drop_tray()
+        if _HAS_QTDBUS:
+            bus = QDBusConnection.sessionBus()
+            if not (
+                bus.isConnected()
+                and bus.interface().isServiceRegistered(self._SNI_SERVICE).value()
+            ):
+                return  # host vanished again while we waited
+        self._create_tray()
+
+    def _drop_tray(self) -> None:
+        """Tear down the current tray icon (host gone or being replaced)."""
+        if self._tray is not None:
+            self._tray.hide()
+            self._tray.deleteLater()
+            self._tray = None
+
+    def _retry_tray(self) -> None:
+        """Fallback timer slot (no QtDBus): build the tray when Qt sees a host."""
+        self._tray_retry_attempts += 1
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            if self._tray_retry_timer is not None:
+                self._tray_retry_timer.stop()
+                self._tray_retry_timer = None
+            _LOGGER.info(
+                "Tray host appeared after %d attempt(s); creating tray icon.",
+                self._tray_retry_attempts,
+            )
+            self._create_tray()
+            return
+        if self._tray_retry_attempts >= self._TRAY_RETRY_MAX_ATTEMPTS:
+            if self._tray_retry_timer is not None:
+                self._tray_retry_timer.stop()
+                self._tray_retry_timer = None
+            _LOGGER.info(
+                "No tray host appeared after %d attempts; running without a "
+                "tray icon (relaunch OpenKraken to open the window).",
+                self._tray_retry_attempts,
+            )
+
+    def _create_tray(self) -> None:
+        """Construct the tray icon, menu and wiring (host must be available)."""
         tray = QSystemTrayIcon(self)
         tray.setIcon(theme.make_tray_icon(None))
         tray.setToolTip("OpenKraken")
@@ -232,6 +355,10 @@ class MainWindow(QMainWindow):
         tray.show()
 
         self._tray = tray
+        # Force the next sample to repaint the icon: after a recreate the cached
+        # integer temp may match the live one, which would otherwise skip the
+        # update and leave the fresh icon temp-less.
+        self._last_tray_temp = None
         # Match the initial label to the window's actual visibility. When launched
         # with --minimized (and a tray present) app.py skips show(), so no
         # showEvent fires; without this the menu would wrongly read "Hide window".
@@ -274,14 +401,13 @@ class MainWindow(QMainWindow):
     def _on_connection_changed(self, connected: bool, description: str) -> None:
         if connected:
             label = description or "Kraken Elite"
-            # Elide so a long model name (e.g. "NZXT Kraken 2024 Elite RGB")
-            # never overflows the fixed-width sidebar pill.
-            avail = max(60, self._conn_pill.width() - 24)
-            metrics = QFontMetrics(self._conn_pill.font())
-            elided = metrics.elidedText(label, Qt.TextElideMode.ElideRight, avail)
-            self._conn_pill.setText(f"●  {elided}")
+            # Word wrap (set on the pill) shows the full model name across
+            # lines; the tooltip is a belt-and-braces copy.
+            self._conn_pill.setText(f"●  {label}")
+            self._conn_pill.setToolTip(label)
         else:
             self._conn_pill.setText("●  Disconnected")
+            self._conn_pill.setToolTip("")
 
         self._conn_pill.setProperty("connected", connected)
         # Re-polish so the [connected] QSS selector updates.
@@ -405,6 +531,27 @@ class MainWindow(QMainWindow):
         self._engine.stop()
         QApplication.quit()
 
+    def restart_app(self) -> None:
+        """Stop the engine and re-exec OpenKraken in place (for self-update).
+
+        ``os.execv`` replaces this process image, so it keeps the same systemd
+        unit / launch context — the freshly pulled code runs on next start.
+        """
+        import os
+        import sys
+
+        _LOGGER.info("Restarting OpenKraken to load the updated version.")
+        self._really_quit = True
+        try:
+            self._engine.stop()
+        except Exception:
+            _LOGGER.exception("engine.stop() during restart failed (continuing)")
+        try:
+            os.execv(sys.executable, [sys.executable, "-m", "openkraken", *sys.argv[1:]])
+        except Exception:
+            _LOGGER.exception("os.execv restart failed; quitting instead")
+            QApplication.quit()
+
     def _close_action(self) -> str:
         """Decide what closing the window should do.
 
@@ -436,13 +583,6 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.hide()
             self._update_show_hide_label()
-            if self._tray is not None:
-                self._tray.showMessage(
-                    "OpenKraken",
-                    "Still running in the tray. Right-click to quit.",
-                    theme.make_app_icon(),
-                    3_000,
-                )
             return
 
         if action == "background":

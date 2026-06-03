@@ -310,16 +310,17 @@ def _build_qss() -> str:
         background-color: {c['panel']};
         border: 1px solid {c['border']};
         border-radius: 10px;
-        margin-top: 14px;
-        padding: 12px;
+        margin-top: 20px;
+        padding: 18px 14px 14px 14px;
         font-weight: 600;
     }}
     QGroupBox::title {{
         subcontrol-origin: margin;
         subcontrol-position: top left;
         left: 12px;
-        top: 2px;
-        padding: 0 6px;
+        top: 0px;
+        padding: 1px 8px;
+        background-color: {c['bg']};
         color: {c['text_dim']};
     }}
 
@@ -329,9 +330,15 @@ def _build_qss() -> str:
         color: {c['text']};
         border: 1px solid {c['border']};
         border-radius: 8px;
-        padding: 6px 10px;
+        padding: 4px 10px;
+        min-height: 24px;
         selection-background-color: {c['accent']};
         selection-color: #ffffff;
+    }}
+    /* Leave room on the right for the stepper buttons so the value never sits
+       under them. */
+    QSpinBox, QDoubleSpinBox {{
+        padding-right: 22px;
     }}
     QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {{
         border-color: {c['accent']};
@@ -340,11 +347,28 @@ def _build_qss() -> str:
         color: {c['text_dim']};
         background-color: {c['panel']};
     }}
-    QSpinBox::up-button, QDoubleSpinBox::up-button,
-    QSpinBox::down-button, QDoubleSpinBox::down-button {{
+    /* Steppers pinned to the top-right / bottom-right corners, full field height. */
+    QSpinBox::up-button, QDoubleSpinBox::up-button {{
+        subcontrol-origin: border;
+        subcontrol-position: top right;
+        width: 18px;
+        margin: 1px 1px 0 0;
+        border-left: 1px solid {c['border']};
+        border-top-right-radius: 7px;
         background-color: {c['panel']};
-        border: none;
-        width: 16px;
+    }}
+    QSpinBox::down-button, QDoubleSpinBox::down-button {{
+        subcontrol-origin: border;
+        subcontrol-position: bottom right;
+        width: 18px;
+        margin: 0 1px 1px 0;
+        border-left: 1px solid {c['border']};
+        border-bottom-right-radius: 7px;
+        background-color: {c['panel']};
+    }}
+    QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+    QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {{
+        background-color: {c['panel2']};
     }}
     QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {{
         image: none;
@@ -398,6 +422,25 @@ def _build_qss() -> str:
         border: 1px solid {c['accent']};
         border-radius: 6px;
         padding: 4px 8px;
+    }}
+
+    /* ---- Sidebar branding + connection pill -------------------------- */
+    QLabel#appTitle {{
+        font-size: 17px;
+        font-weight: 800;
+        letter-spacing: 0.5px;
+    }}
+    QLabel#connPill {{
+        background-color: {c['panel2']};
+        border: 1px solid {c['border']};
+        border-radius: 10px;
+        padding: 6px 10px;
+        font-size: 11px;
+        color: {c['crit']};
+    }}
+    QLabel#connPill[connected="true"] {{
+        color: {c['ok']};
+        border-color: rgba(52, 211, 153, 0.35);
     }}
 
     /* ---- Status bar ------------------------------------------------- */

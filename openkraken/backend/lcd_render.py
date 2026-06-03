@@ -317,12 +317,16 @@ def _draw_vendor_badge(
     center: tuple[float, float],
     vendor: str | None,
     size: int = 22,
+    anchor: str = "center",
+    max_width: float | None = None,
 ) -> None:
-    """Draw the vendor mark centred at *center* (no-op if vendor unknown).
+    """Draw the vendor mark at *center* (no-op if vendor unknown).
 
     Prefers a user-supplied ``LOGO_DIR/<vendor>.png`` (official artwork the user
     is entitled to); otherwise falls back to a stylised wordmark badge so the
-    project itself bundles no trademarked logos.
+    project itself bundles no trademarked logos.  *anchor* is ``"center"`` or
+    ``"left"`` (``center[0]`` is then the mark's left edge); *max_width* scales a
+    wide logo down so it still fits its slot (logos vary a lot in aspect ratio).
     """
     key = (vendor or "").lower()
     entry = _VENDOR_BADGES.get(key)
@@ -332,17 +336,22 @@ def _draw_vendor_badge(
 
     logo = _load_vendor_logo(key, target_h=int(size * 1.6))
     if logo is not None:
-        img.paste(logo, (int(cx - logo.width / 2), int(cy - logo.height / 2)), logo)
+        if max_width is not None and logo.width > max_width:
+            scale = max_width / logo.width
+            logo = logo.resize((int(max_width), max(1, int(logo.height * scale))))
+        x = int(cx) if anchor == "left" else int(cx - logo.width / 2)
+        img.paste(logo, (x, int(cy - logo.height / 2)), logo)
         return
 
     text, color = entry
     font = _font(size)
     pad_x, pad_y = 9.0, 4.0
     w, h = _measure(draw, text, font)
-    x0, y0 = cx - w / 2.0 - pad_x, cy - h / 2.0 - pad_y
-    x1, y1 = cx + w / 2.0 + pad_x, cy + h / 2.0 + pad_y
+    bx = cx + w / 2.0 + pad_x if anchor == "left" else cx
+    x0, y0 = bx - w / 2.0 - pad_x, cy - h / 2.0 - pad_y
+    x1, y1 = bx + w / 2.0 + pad_x, cy + h / 2.0 + pad_y
     draw.rounded_rectangle((x0, y0, x1, y1), radius=(y1 - y0) / 2.0, outline=color, width=2)
-    _draw_text_anchored(draw, (cx, cy), text, font, color, anchor="mm")
+    _draw_text_anchored(draw, (bx, cy), text, font, color, anchor="mm")
 
 
 def _draw_liquid_arc(
@@ -487,7 +496,12 @@ def _render_half(
     _draw_text_anchored(draw, (cx, label_y), label, label_font, accent, anchor="mm")
     if vendor:
         lw, _lh = _measure(draw, label, label_font)
-        _draw_vendor_badge(img, draw, (cx + lw / 2.0 + 52, label_y), vendor, size=18)
+        # Left-anchored just right of the label, width-capped so a wide wordmark
+        # (e.g. AMD) clears the label and stays inside the round bezel.
+        _draw_vendor_badge(
+            img, draw, (cx + lw / 2.0 + 14, label_y), vendor,
+            size=18, anchor="left", max_width=70,
+        )
 
     temp_text = _fmt_temp(temp)
     color = _temp_color(temp, kind)

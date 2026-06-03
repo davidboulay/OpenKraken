@@ -14,21 +14,24 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtWidgets import (
     QCheckBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from openkraken import __version__
+from openkraken.backend import updater
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from openkraken.backend.engine import ControlEngine
@@ -42,6 +45,24 @@ _DISCLAIMER = (
     "OpenKraken is an unofficial, community tool and is not affiliated with NZXT. "
     "It controls cooling hardware directly — use at your own risk."
 )
+
+
+class _UpdateWorker(QThread):
+    """Runs an updater call off the GUI thread and reports the result."""
+
+    checked = pyqtSignal(object)   # updater.UpdateStatus
+    applied = pyqtSignal(bool, str)
+
+    def __init__(self, mode: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._mode = mode  # "check" | "apply"
+
+    def run(self) -> None:  # pragma: no cover - thread body, hardware/network
+        if self._mode == "check":
+            self.checked.emit(updater.check_for_update())
+        else:
+            ok, msg = updater.apply_update()
+            self.applied.emit(ok, msg)
 
 
 class SettingsPage(QWidget):
@@ -59,12 +80,28 @@ class SettingsPage(QWidget):
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 16, 16, 16)
-        root.setSpacing(14)
+        root.setSpacing(12)
 
-        root.addWidget(self._build_app_box())
-        root.addWidget(self._build_device_box())
-        root.addWidget(self._build_about_box())
-        root.addStretch(1)
+        # Scrollable content so the boxes never overflow / overlap on a short
+        # window; the Save button stays pinned below the scroll area.
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        content = QWidget()
+        inner = QVBoxLayout(content)
+        inner.setContentsMargins(0, 0, 8, 0)  # right pad for the scrollbar
+        inner.setSpacing(14)
+        inner.addWidget(self._build_app_box())
+        # Device and About side by side to use the horizontal space.
+        columns = QHBoxLayout()
+        columns.setSpacing(14)
+        columns.addWidget(self._build_device_box(), stretch=1)
+        columns.addWidget(self._build_about_box(), stretch=1)
+        inner.addLayout(columns)
+        inner.addStretch(1)
+        scroll.setWidget(content)
+        root.addWidget(scroll, stretch=1)
 
         save_row = QHBoxLayout()
         save_row.addStretch(1)
@@ -87,7 +124,7 @@ class SettingsPage(QWidget):
         box = QGroupBox("Application")
         form = QFormLayout(box)
         form.setHorizontalSpacing(14)
-        form.setVerticalSpacing(8)
+        form.setVerticalSpacing(12)
 
         self._poll_spin = QDoubleSpinBox()
         self._poll_spin.setRange(0.5, 5.0)
@@ -167,7 +204,79 @@ class SettingsPage(QWidget):
         disclaimer.setProperty("hint", True)
         layout.addWidget(disclaimer)
 
+        # --- Updates -----------------------------------------------------
+        self._auto_update = QCheckBox("Check for updates on launch")
+        self._auto_update.setChecked(bool(getattr(self._config, "check_updates_on_start", True)))
+        layout.addWidget(self._auto_update)
+
+        update_row = QHBoxLayout()
+        self._check_update_btn = QPushButton("Check for updates")
+        self._check_update_btn.clicked.connect(self._check_for_updates)
+        update_row.addWidget(self._check_update_btn)
+        self._apply_update_btn = QPushButton("Update && Restart")
+        self._apply_update_btn.clicked.connect(self._apply_update)
+        self._apply_update_btn.setVisible(False)
+        update_row.addWidget(self._apply_update_btn)
+        update_row.addStretch(1)
+        layout.addLayout(update_row)
+
+        self._update_status = QLabel("")
+        self._update_status.setWordWrap(True)
+        self._update_status.setProperty("hint", True)
+        layout.addWidget(self._update_status)
+
+        self._update_worker: _UpdateWorker | None = None
+        # Optional background check on launch.
+        if self._auto_update.isChecked():
+            self._check_for_updates(announce_only_if_available=True)
+
         return box
+
+    # ------------------------------------------------------------------ updates
+    def _check_for_updates(self, _checked: bool = False, *, announce_only_if_available: bool = False) -> None:
+        if self._update_worker is not None and self._update_worker.isRunning():
+            return
+        self._announce_only = announce_only_if_available
+        if not announce_only_if_available:
+            self._update_status.setText("Checking GitHub for updates…")
+        self._check_update_btn.setEnabled(False)
+        worker = _UpdateWorker("check", self)
+        worker.checked.connect(self._on_update_checked)
+        worker.finished.connect(lambda: self._check_update_btn.setEnabled(True))
+        self._update_worker = worker
+        worker.start()
+
+    def _on_update_checked(self, status: object) -> None:
+        st: updater.UpdateStatus = status  # type: ignore[assignment]
+        self._apply_update_btn.setVisible(bool(st.update_available and st.can_apply))
+        if getattr(self, "_announce_only", False) and not st.update_available:
+            self._update_status.setText("")  # stay quiet on a silent launch check
+            return
+        self._update_status.setText(st.message)
+
+    def _apply_update(self) -> None:
+        if self._update_worker is not None and self._update_worker.isRunning():
+            return
+        self._apply_update_btn.setEnabled(False)
+        self._update_status.setText("Updating…")
+        worker = _UpdateWorker("apply", self)
+        worker.applied.connect(self._on_update_applied)
+        self._update_worker = worker
+        worker.start()
+
+    def _on_update_applied(self, ok: bool, message: str) -> None:
+        self._update_status.setText(message)
+        self._apply_update_btn.setEnabled(True)
+        if ok:
+            self._apply_update_btn.setVisible(False)
+            # Restart in place so the new code is loaded (keeps the same systemd
+            # unit / tray). Give the user a moment to read the message.
+            window = self.window()
+            restart = getattr(window, "restart_app", None)
+            if callable(restart):
+                from PyQt6.QtCore import QTimer
+
+                QTimer.singleShot(1200, restart)
 
     # ------------------------------------------------------------------ config
     def _load_config(self) -> None:
@@ -222,6 +331,7 @@ class SettingsPage(QWidget):
         cfg.close_to_tray = bool(self._close_tray.isChecked())
         cfg.run_in_background = bool(self._run_background.isChecked())
         cfg.apply_on_start = bool(self._apply_start.isChecked())
+        cfg.check_updates_on_start = bool(self._auto_update.isChecked())
 
         try:
             cfg.save()

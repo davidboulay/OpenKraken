@@ -130,6 +130,9 @@ class LcdConfig:
     gif_path: str = ""  # last chosen gif (absolute path)
     sensor_style: str = "liquid_ring"  # see lcd_render.STYLES
     sensor_interval: float = 2.0  # seconds between sensor-screen pushes
+    #: Colour of the liquid-temperature arc on the ring (RGB 0-255). NZXT purple
+    #: by default; warn/crit temperatures still override it amber/red.
+    ring_color: tuple[int, int, int] = (124, 58, 237)
 
     def to_dict(self) -> dict[str, Any]:
         """Return a JSON-serializable mapping."""
@@ -141,6 +144,7 @@ class LcdConfig:
             "gif_path": self.gif_path,
             "sensor_style": self.sensor_style,
             "sensor_interval": float(self.sensor_interval),
+            "ring_color": [int(c) for c in self.ring_color],
         }
 
     @classmethod
@@ -157,6 +161,13 @@ class LcdConfig:
             logger.warning("Invalid LCD orientation %r; using %d", orientation, base.orientation)
             orientation = base.orientation
 
+        ring_raw = d.get("ring_color")
+        if ring_raw is None:
+            ring_color = base.ring_color
+        else:
+            ring_norm = _normalize_colors([ring_raw], fallback=[base.ring_color])
+            ring_color = ring_norm[0] if ring_norm else base.ring_color
+
         return cls(
             mode=_as_str(d.get("mode"), base.mode),
             brightness=brightness,
@@ -165,6 +176,7 @@ class LcdConfig:
             gif_path=_as_str(d.get("gif_path"), base.gif_path),
             sensor_style=_as_str(d.get("sensor_style"), base.sensor_style),
             sensor_interval=_as_float(d.get("sensor_interval"), base.sensor_interval),
+            ring_color=ring_color,
         )
 
 
@@ -294,6 +306,9 @@ class AppConfig:
     #: The window is hidden and re-launching OpenKraken reopens it.
     run_in_background: bool = True
     apply_on_start: bool = True
+    #: Quietly check GitHub for a newer version on launch (only surfaces a notice
+    #: in Settings when an update is actually available).
+    check_updates_on_start: bool = True
     pump: ChannelConfig = field(
         default_factory=lambda: ChannelConfig(
             mode="curve",
@@ -399,6 +414,7 @@ class AppConfig:
             "close_to_tray": bool(self.close_to_tray),
             "run_in_background": bool(self.run_in_background),
             "apply_on_start": bool(self.apply_on_start),
+            "check_updates_on_start": bool(self.check_updates_on_start),
             "pump": self.pump.to_dict(),
             "fan": self.fan.to_dict(),
             "lcd": self.lcd.to_dict(),
@@ -450,6 +466,9 @@ class AppConfig:
             close_to_tray=_as_bool(d.get("close_to_tray"), defaults.close_to_tray),
             run_in_background=_as_bool(d.get("run_in_background"), defaults.run_in_background),
             apply_on_start=_as_bool(d.get("apply_on_start"), defaults.apply_on_start),
+            check_updates_on_start=_as_bool(
+                d.get("check_updates_on_start"), defaults.check_updates_on_start
+            ),
             pump=pump,
             fan=fan,
             lcd=lcd,

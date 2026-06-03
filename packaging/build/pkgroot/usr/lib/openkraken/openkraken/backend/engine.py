@@ -296,6 +296,10 @@ class ControlEngine(QThread):
         self._lcd_off_active: bool = False
         # Monotonic timestamp of the last sensor-screen push (0 == never).
         self._last_lcd_push: float = 0.0
+        # Re-assert window (monotonic deadline): after an LCD content change the
+        # firmware can repaint the LED ring to its default, so for a few seconds
+        # we re-stream the app's lighting each tick to keep the user's settings.
+        self._lighting_reassert_until: float = 0.0
         # Latest brightness / orientation we successfully pushed, for change detection.
         self._applied_brightness: int | None = None
         self._applied_orientation: int | None = None
@@ -353,6 +357,28 @@ class ControlEngine(QThread):
             sensor_interval=cfg.sensor_interval,
         )
         self._requests.put(lambda: self._do_apply_lcd(snapshot))
+
+    def clear_lcd_media(self) -> None:
+        """Request erasure of the media stored in the cooler's LCD memory.
+
+        Thread-safe: enqueues the work onto the engine loop.  After clearing,
+        the currently configured LCD mode is re-applied so the screen never
+        stays on the bare firmware fallback.
+        """
+        self._requests.put(self._do_clear_lcd_media)
+
+    def _do_clear_lcd_media(self) -> None:
+        """Engine-thread worker for :meth:`clear_lcd_media`."""
+        if self._device.clear_lcd_media():
+            self.applied.emit(
+                "lcd", "stored media cleared (boot screen reset to firmware default)"
+            )
+            # _delete_all_buckets leaves the screen in liquid mode; re-apply the
+            # configured mode in case the user runs a sensors/static/gif screen.
+            # (Engine-thread context, so using the live mirror is safe.)
+            self._do_apply_lcd(self._lcd_cfg)
+        else:
+            self.error.emit("Could not clear the cooler's stored media")
 
     def apply_lighting(self, cfg: LightingConfig) -> None:
         """Request that RGB lighting be (re)configured from ``cfg``.
@@ -461,11 +487,13 @@ class ControlEngine(QThread):
         self._applied_orientation = None
         self._do_apply_channel("pump", self._config.pump)
         self._do_apply_channel("fan", self._config.fan)
-        self._do_apply_lcd(self._lcd_cfg)
-        # Re-apply RGB lighting only when the user has enabled control; when
-        # disabled we must never touch the LEDs (INTERFACES-LIGHTING.md).
+        # Apply lighting BEFORE the LCD: the LCD content write disturbs the LED
+        # ring, and _do_apply_lcd's repaint then runs with the freshly-loaded
+        # lighting state (rather than a stale/default one). Only touch the LEDs
+        # when the user has enabled control (INTERFACES-LIGHTING.md).
         if self._lighting_cfg.enabled:
             self._do_apply_lighting(self._lighting_cfg)
+        self._do_apply_lcd(self._lcd_cfg)
 
     # ------------------------------------------------------------------ #
     # Loop step 1: reconnection.
@@ -613,15 +641,23 @@ class ControlEngine(QThread):
             gpu_load=snap.gpu_load,
             pump_rpm=status.pump_rpm,
             fan_rpm=status.fan_rpm,
+            cpu_vendor=self._sensors.cpu_vendor,
+            gpu_vendor=self._sensors.gpu_vendor,
+            ring_color=tuple(self._lcd_cfg.ring_color),
         )
         try:
             path = lcd_render.render_to_file(self._lcd_cfg.sensor_style, data)
         except Exception:  # pragma: no cover - rendering must not crash the loop
             _LOGGER.exception("failed to render LCD sensor frame")
             return
-        if not self._device.set_lcd_static(path):
-            _LOGGER.warning("failed to push LCD sensor frame")
+        # Double-buffered upload: flicker-free streaming (holds the last frame on
+        # a failed push) vs the one-shot set_lcd_static used elsewhere.
+        if not self._device.set_lcd_sensor_frame(path):
+            _LOGGER.debug("LCD sensor frame not pushed (held previous frame)")
             self._emit_connection(self._device.is_connected)
+            return
+        # The LCD upload disturbs the LED ring; repaint it (no-op if lighting off).
+        self._repaint_lighting()
 
     # ------------------------------------------------------------------ #
     # Loop step 5: RGB lighting frame streaming.
@@ -640,6 +676,14 @@ class ControlEngine(QThread):
         if not self._device.is_connected:
             return
         now = time.monotonic()
+        # During the re-assert window after an LCD content change, re-stream every
+        # channel (incl. fixed ones) so the firmware can't leave the ring on its
+        # default — this keeps the app's lighting when switching to the firmware
+        # liquid screen (item: "keep the lighting settings, don't reset").
+        if now < self._lighting_reassert_until:
+            for channel, state in self._lighting.items():
+                self._write_lighting_frame(channel, state, now)
+            return
         for channel, state in self._lighting.items():
             if not state.animated:
                 continue
@@ -648,6 +692,28 @@ class ControlEngine(QThread):
             # _write_lighting_frame advances state.last_write on success, so a
             # failed write does not consume the slot and the next tick can retry.
             self._write_lighting_frame(channel, state, now)
+
+    def _repaint_lighting(self) -> None:
+        """Re-send the current frame for every channel after an LCD write.
+
+        An LCD content upload (sensor refresh, static image, GIF) shares the HID
+        interface with the ring/fan LED controller and disturbs it: a few LEDs --
+        in practice the ones carried by the ``0x22 0x11`` continuation packet
+        (ring LEDs 20-23, the top-left arc) -- drop back to the firmware default
+        (green).  Re-streaming the current frame immediately after the LCD write
+        repaints them.  Cheap (a few 64-byte reports) and only runs when lighting
+        is enabled and the device is connected.  Same root interaction OpenRGB
+        hits on this device; see PROTOCOL.md Quirk A / §11.
+        """
+        if not self._lighting_cfg.enabled or not self._device.is_connected:
+            return
+        now = time.monotonic()
+        for channel, state in self._lighting.items():
+            self._write_lighting_frame(channel, state, now)
+        # Keep re-asserting for a few seconds: the firmware can repaint the ring
+        # to its default shortly after an LCD content/mode change (esp. the
+        # switch to the firmware liquid screen).
+        self._lighting_reassert_until = now + 3.0
 
     def _write_lighting_frame(
         self, channel: str, state: _LightingState, now: float
@@ -847,13 +913,17 @@ class ControlEngine(QThread):
         self._set_orientation(cfg.orientation)
 
         # ---- content mode ----
+        # Uploading LCD content (static/gif, and the liquid-mode bucket switch)
+        # disturbs the LED ring, so repaint lighting afterwards (no-op if off).
         if cfg.mode == "liquid":
             ok = self._device.set_lcd_liquid_mode()
             self._emit_apply_result("lcd", "liquid temperature screen", ok)
+            self._repaint_lighting()
         elif cfg.mode == "static":
             if cfg.image_path:
                 ok = self._device.set_lcd_static(cfg.image_path)
                 self._emit_apply_result("lcd", f"static image {cfg.image_path}", ok)
+                self._repaint_lighting()
             else:
                 _LOGGER.warning("LCD static mode requested without an image path")
                 self.error.emit("LCD: no static image selected")
@@ -861,6 +931,7 @@ class ControlEngine(QThread):
             if cfg.gif_path:
                 ok = self._device.set_lcd_gif(cfg.gif_path)
                 self._emit_apply_result("lcd", f"animated GIF {cfg.gif_path}", ok)
+                self._repaint_lighting()
             else:
                 _LOGGER.warning("LCD gif mode requested without a gif path")
                 self.error.emit("LCD: no GIF selected")
