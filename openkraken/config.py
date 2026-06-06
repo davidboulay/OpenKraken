@@ -306,6 +306,11 @@ class AppConfig:
     #: The window is hidden and re-launching OpenKraken reopens it.
     run_in_background: bool = True
     apply_on_start: bool = True
+    #: Seconds to defer the LCD apply when starting *during boot*, so OpenKraken's
+    #: multi-step LCD writes don't race the boot HID/USB storm (which intermittently
+    #: blacks the panel). The firmware screen shows during the wait; 0 disables.
+    #: Only applies near boot (low system uptime); manual restarts apply at once.
+    lcd_startup_grace_s: float = 25.0
     #: Quietly check GitHub for a newer version on launch (only surfaces a notice
     #: in Settings when an update is actually available).
     check_updates_on_start: bool = True
@@ -414,6 +419,7 @@ class AppConfig:
             "close_to_tray": bool(self.close_to_tray),
             "run_in_background": bool(self.run_in_background),
             "apply_on_start": bool(self.apply_on_start),
+            "lcd_startup_grace_s": float(self.lcd_startup_grace_s),
             "check_updates_on_start": bool(self.check_updates_on_start),
             "pump": self.pump.to_dict(),
             "fan": self.fan.to_dict(),
@@ -466,6 +472,9 @@ class AppConfig:
             close_to_tray=_as_bool(d.get("close_to_tray"), defaults.close_to_tray),
             run_in_background=_as_bool(d.get("run_in_background"), defaults.run_in_background),
             apply_on_start=_as_bool(d.get("apply_on_start"), defaults.apply_on_start),
+            lcd_startup_grace_s=_as_float(
+                d.get("lcd_startup_grace_s"), defaults.lcd_startup_grace_s
+            ),
             check_updates_on_start=_as_bool(
                 d.get("check_updates_on_start"), defaults.check_updates_on_start
             ),

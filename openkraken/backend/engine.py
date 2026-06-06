@@ -49,6 +49,11 @@ _SLEEP_SLICE: float = 0.2
 # Minimum interval between reconnection attempts while disconnected, in seconds.
 _RECONNECT_INTERVAL: float = 5.0
 
+# System-uptime threshold (seconds) below which an engine start counts as "during
+# boot", enabling the LCD startup grace delay. A manual restart later (uptime above
+# this) applies the LCD immediately so it recovers a black screen on the spot.
+_LCD_GRACE_BOOT_WINDOW: float = 120.0
+
 # Failsafe duty (percent) applied once when a software-curve source temperature is
 # unavailable (sensor missing).  Keeps the loop alive without cooking it.
 _FAILSAFE_DUTY: int = 80
@@ -296,6 +301,12 @@ class ControlEngine(QThread):
         self._lcd_off_active: bool = False
         # Monotonic timestamp of the last sensor-screen push (0 == never).
         self._last_lcd_push: float = 0.0
+        # When set, the initial LCD apply (and sensor streaming) is deferred until
+        # this monotonic deadline. Used only at boot, so OpenKraken's fragile
+        # multi-step LCD bucket writes don't race the boot HID/USB storm (winedevice,
+        # OpenRGB scan, etc.) which intermittently corrupts the panel to black.
+        # The firmware screen shows during the wait; cooling/lighting apply at once.
+        self._lcd_apply_pending_until: float | None = None
         # Re-assert window (monotonic deadline): after an LCD content change the
         # firmware can repaint the LED ring to its default, so for a few seconds
         # we re-stream the app's lighting each tick to keep the user's settings.
@@ -445,7 +456,9 @@ class ControlEngine(QThread):
                 # 3. Drive software-curve channels for this tick.
                 self._tick_software_curves(status, snap)
 
-                # 4. Push an LCD sensor frame if due.
+                # 4. Fire a deferred boot-time LCD apply once its grace elapses,
+                #    then push an LCD sensor frame if due.
+                self._tick_deferred_lcd()
                 self._tick_lcd_sensors(status, snap)
 
                 # 5. Stream an animated lighting frame if due (~1 FPS ceiling).
@@ -471,13 +484,30 @@ class ControlEngine(QThread):
         connected = self._device.connect()
         self._emit_connection(connected)
         if connected and self._config.apply_on_start:
-            self._apply_all_configs()
+            # Defer the LCD apply only when we're starting *during boot* (small
+            # system uptime), so the boot HID/USB storm can settle first. A manual
+            # restart later applies immediately (so it recovers a black screen now).
+            self._apply_all_configs(defer_lcd=self._in_boot_window())
 
-    def _apply_all_configs(self) -> None:
+    def _in_boot_window(self) -> bool:
+        """True if the system booted recently and an LCD grace delay should apply."""
+        grace = float(getattr(self._config, "lcd_startup_grace_s", 0.0) or 0.0)
+        if grace <= 0.0:
+            return False
+        try:
+            with open("/proc/uptime", encoding="ascii") as fh:
+                uptime = float(fh.read().split()[0])
+        except (OSError, ValueError):
+            return False
+        return uptime < _LCD_GRACE_BOOT_WINDOW
+
+    def _apply_all_configs(self, defer_lcd: bool = False) -> None:
         """(Re)apply pump, fan and LCD configs from the current AppConfig.
 
         Called on startup (when ``apply_on_start``) and automatically after every
-        successful (re)connection.
+        successful (re)connection.  When *defer_lcd* is set, cooling and lighting
+        are applied immediately but the LCD apply is postponed (the run loop fires
+        it once :attr:`_lcd_apply_pending_until` elapses) to dodge boot contention.
         """
         # A (re)connected device comes back at its own firmware-stored brightness /
         # orientation. Our change-detection cache (``_applied_*``) is *not* cleared
@@ -494,7 +524,16 @@ class ControlEngine(QThread):
         # when the user has enabled control (INTERFACES-LIGHTING.md).
         if self._lighting_cfg.enabled:
             self._do_apply_lighting(self._lighting_cfg)
-        self._do_apply_lcd(self._lcd_cfg)
+        if defer_lcd:
+            grace = float(getattr(self._config, "lcd_startup_grace_s", 0.0) or 0.0)
+            self._lcd_apply_pending_until = time.monotonic() + grace
+            _LOGGER.info(
+                "deferring LCD apply %.0fs (boot grace) to avoid early HID contention",
+                grace,
+            )
+        else:
+            self._lcd_apply_pending_until = None
+            self._do_apply_lcd(self._lcd_cfg)
 
     # ------------------------------------------------------------------ #
     # Loop step 1: reconnection.
@@ -620,11 +659,26 @@ class ControlEngine(QThread):
         profile = curves.software_failsafe(_FAILSAFE_DUTY, channel)
         self._device.set_speed_profile(channel, profile)
 
+    def _tick_deferred_lcd(self) -> None:
+        """Fire the boot-deferred LCD apply once its grace period has elapsed."""
+        if self._lcd_apply_pending_until is None:
+            return
+        if time.monotonic() < self._lcd_apply_pending_until:
+            return
+        self._lcd_apply_pending_until = None
+        if self._device.is_connected:
+            _LOGGER.info("boot grace elapsed; applying LCD now")
+            self._do_apply_lcd(self._lcd_cfg)
+
     # ------------------------------------------------------------------ #
     # Loop step 4: LCD sensor frames.
     # ------------------------------------------------------------------ #
     def _tick_lcd_sensors(self, status: DeviceStatus, snap: SystemSnapshot) -> None:
         """Render and push an LCD sensor frame if in "sensors" mode and due."""
+        # Hold off streaming while the boot-time LCD apply is still deferred (the
+        # firmware screen shows meanwhile).
+        if self._lcd_apply_pending_until is not None:
+            return
         if self._lcd_cfg.mode != "sensors":
             return
         now = time.monotonic()
