@@ -271,6 +271,15 @@ class KrakenDevice:
         #: (``None`` until the first sensor frame lands).  See
         #: :meth:`set_lcd_sensor_frame`.
         self._lcd_active_buffer: int | None = None
+        #: True when the panel is NOT known to be in image/bucket display mode --
+        #: a fresh connect, or after a liquid/static/gif :meth:`_set_screen` left it
+        #: in firmware-liquid (or another) display mode.  The lightweight
+        #: double-buffer ``_switch_bucket`` can only swap the active bucket; it
+        #: cannot re-establish image display mode, so while this is set the next
+        #: streamed frame is routed through the driver's full ``set_screen("static")``
+        #: path (which does).  Otherwise a liquid->sensors switch leaves the panel
+        #: black (empty bucket) with no error.  See :meth:`set_lcd_sensor_frame`.
+        self._lcd_stream_needs_reinit: bool = True
 
     def _ensure_bucket_watcher(self) -> _BucketFailureWatcher:
         """Install (once) and return the driver bucket-failure watcher."""
@@ -394,8 +403,11 @@ class KrakenDevice:
             self._connected = True
             self._description = str(getattr(chosen, "description", "") or "")
             self._install_lcd_switch_guard(chosen)
-            # Fresh device: no double-buffer slot is displayed yet.
+            # Fresh device: no double-buffer slot is displayed yet, and the panel
+            # is in its firmware-stored display mode -- force a full re-init on the
+            # first streamed frame so image display mode is established cleanly.
             self._lcd_active_buffer = None
+            self._lcd_stream_needs_reinit = True
             self._apply_init_status(init_status)
             logger.info(
                 "Connected to %s (fw=%s, brightness=%d%%, orientation=%d°)",
@@ -524,17 +536,39 @@ class KrakenDevice:
             return True
         return False
 
+    def request_lcd_reinit(self) -> None:
+        """Force the next streamed sensor frame through the full image-mode path.
+
+        Sets the same flag a fresh connect / mode switch sets, so the next
+        :meth:`set_lcd_sensor_frame` re-establishes image display mode and resets
+        the double-buffer.  Used by the engine's periodic LCD self-heal to recover
+        a silently-blacked panel (an HID reply de-sync can desync the double-buffer
+        with no error logged; the panel can't be read back to detect it).
+        """
+        self._lcd_stream_needs_reinit = True
+
     def set_lcd_liquid_mode(self) -> bool:
         """Switch the LCD to the firmware liquid-temperature screen."""
-        return self._set_screen("liquid", None)
+        ok = self._set_screen("liquid", None)
+        # The panel is now in firmware-liquid display mode (and its bucket memory
+        # was reset); a later switch back to sensor streaming must re-establish
+        # image display mode via the full path, not just a bucket switch.
+        self._lcd_stream_needs_reinit = True
+        return ok
 
     def set_lcd_static(self, image_path: str) -> bool:
         """Upload a static image to the LCD (blocking; ~0.1-1 s)."""
-        return self._set_screen("static", str(image_path))
+        ok = self._set_screen("static", str(image_path))
+        # Driver-managed buckets now own the panel; the double-buffer streamer's
+        # bookkeeping is stale, so a return to sensors must re-init (see flag).
+        self._lcd_stream_needs_reinit = True
+        return ok
 
     def set_lcd_gif(self, gif_path: str) -> bool:
         """Upload an animated GIF to the LCD (blocking)."""
-        return self._set_screen("gif", str(gif_path))
+        ok = self._set_screen("gif", str(gif_path))
+        self._lcd_stream_needs_reinit = True
+        return ok
 
     #: Names of the private liquidctl primitives the double-buffered sensor
     #: uploader needs; absence (older/newer driver) falls back to set_lcd_static.
@@ -565,6 +599,20 @@ class KrakenDevice:
         primitives this relies on (it pins liquidctl, so they are present).
         Returns ``True`` only when a new frame reached the panel.
         """
+        # First frame after a fresh connect or a liquid/static/gif switch: the
+        # panel may not be in image display mode, and the lightweight double-buffer
+        # ``_switch_bucket`` cannot establish it -- so the switch "succeeds" but the
+        # panel shows an empty bucket (black) with no error.  Route this one frame
+        # through the driver's full ``set_screen("static")`` path (which sets image
+        # display mode), then reset the double-buffer and resume streaming.  Done
+        # outside the lock because ``_set_screen`` acquires it itself.
+        if self._lcd_stream_needs_reinit:
+            ok = self._set_screen("static", str(image_path))
+            if ok:
+                with self._lock:
+                    self._lcd_active_buffer = None
+                    self._lcd_stream_needs_reinit = False
+            return ok
         with self._lock:
             if self._dev is None or not self._connected:
                 logger.warning("set_lcd_sensor_frame: device not connected")

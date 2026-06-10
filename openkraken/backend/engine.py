@@ -307,6 +307,13 @@ class ControlEngine(QThread):
         # OpenRGB scan, etc.) which intermittently corrupts the panel to black.
         # The firmware screen shows during the wait; cooling/lighting apply at once.
         self._lcd_apply_pending_until: float | None = None
+        # LCD self-heal: monotonic time sensor streaming (re)started this connect,
+        # and the last forced re-assert. Used to periodically re-establish image
+        # display mode so a silently-blacked panel recovers (the panel can't be
+        # read back to detect black; see _tick_lcd_selfheal). ``None`` => not
+        # streaming sensors right now (fresh/disconnected/other mode).
+        self._lcd_stream_started_at: float | None = None
+        self._last_lcd_reassert: float = 0.0
         # Re-assert window (monotonic deadline): after an LCD content change the
         # firmware can repaint the LED ring to its default, so for a few seconds
         # we re-stream the app's lighting each tick to keep the user's settings.
@@ -459,6 +466,7 @@ class ControlEngine(QThread):
                 # 4. Fire a deferred boot-time LCD apply once its grace elapses,
                 #    then push an LCD sensor frame if due.
                 self._tick_deferred_lcd()
+                self._tick_lcd_selfheal()
                 self._tick_lcd_sensors(status, snap)
 
                 # 5. Stream an animated lighting frame if due (~1 FPS ceiling).
@@ -673,6 +681,54 @@ class ControlEngine(QThread):
     # ------------------------------------------------------------------ #
     # Loop step 4: LCD sensor frames.
     # ------------------------------------------------------------------ #
+    def _tick_lcd_selfheal(self) -> None:
+        """Periodically re-assert the sensor screen so a blacked panel recovers.
+
+        The Kraken LCD can't be read back, so we can't *detect* a black panel; a
+        bucket switch can silently report success on an HID reply de-sync, leaving
+        the double-buffer pointing at a bucket the firmware never displayed (and a
+        later frame deletes the one actually on screen -> black, nothing logged).
+        We therefore re-establish image display mode unconditionally on a schedule:
+        a fast cadence for the first ``lcd_selfheal_boot_phase_s`` of streaming
+        (when the boot HID storm makes de-syncs likeliest), then a slow steady-state
+        interval.  Each re-assert is one full image-mode frame (a brief refresh of
+        the same content), routed via :meth:`KrakenDevice.request_lcd_reinit`.
+        """
+        # Only meaningful while actively streaming the sensor screen.
+        if (
+            self._lcd_apply_pending_until is not None
+            or self._lcd_cfg.mode != "sensors"
+            or not self._device.is_connected
+        ):
+            self._lcd_stream_started_at = None
+            return
+
+        now = time.monotonic()
+        if self._lcd_stream_started_at is None:
+            # Streaming (re)started: the boot apply / mode switch already
+            # established image mode, so don't re-assert immediately -- just arm
+            # the timer from here.
+            self._lcd_stream_started_at = now
+            self._last_lcd_reassert = now
+            return
+
+        boot_phase = float(getattr(self._config, "lcd_selfheal_boot_phase_s", 0.0) or 0.0)
+        in_boot_phase = (now - self._lcd_stream_started_at) < boot_phase
+        if in_boot_phase:
+            interval = float(getattr(self._config, "lcd_selfheal_boot_interval_s", 0.0) or 0.0)
+        else:
+            interval = float(getattr(self._config, "lcd_selfheal_interval_s", 0.0) or 0.0)
+        if interval <= 0.0:  # cadence disabled for this phase
+            return
+        if now - self._last_lcd_reassert < interval:
+            return
+        self._last_lcd_reassert = now
+        _LOGGER.info(
+            "LCD self-heal: re-asserting sensor screen (%s cadence)",
+            "boot" if in_boot_phase else "steady",
+        )
+        self._device.request_lcd_reinit()
+
     def _tick_lcd_sensors(self, status: DeviceStatus, snap: SystemSnapshot) -> None:
         """Render and push an LCD sensor frame if in "sensors" mode and due."""
         # Hold off streaming while the boot-time LCD apply is still deferred (the
