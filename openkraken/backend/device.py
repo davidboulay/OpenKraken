@@ -37,8 +37,22 @@ logger = logging.getLogger(__name__)
 _DRIVER_LOGGER_NAME = "liquidctl.driver.kraken3"
 
 #: Total LCD bucket memory (in 1024-byte units), mirroring the driver's
-#: ``_LCD_TOTAL_MEMORY``; used to size the two double-buffer slots.
+#: ``_LCD_TOTAL_MEMORY``; divided into :data:`_LCD_RING_BUCKETS` slots.
 _LCD_TOTAL_MEMORY = 24320
+
+#: Number of LCD buckets the sensor-frame streamer rotates through. Two would be
+#: the minimum for flicker-free double-buffering, but a silent HID switch de-sync
+#: (the driver's ``_switch_bucket`` can falsely report success on a stale reply)
+#: then leaves our "live bucket" pointer one ahead of the firmware's -- and with
+#: only two slots the very next frame reuses the bucket actually on screen ->
+#: black, nothing logged. Rotating through more buckets and always reusing the
+#: OLDEST one means such a de-sync only shows a one-frame-stale image instead of
+#: blanking; it self-corrects on the next good switch. The device has 16 buckets
+#: and ample memory (each slot here is _LCD_TOTAL_MEMORY/N >> a frame), so 6 is
+#: cheap and tolerates a burst of up to N-2 = 4 consecutive de-syncs before the
+#: reuse pointer could reach the displayed bucket (the self-heal covers rarer
+#: bursts). See :meth:`set_lcd_sensor_frame`.
+_LCD_RING_BUCKETS = 6
 
 #: Plain (no-clear) re-upload attempts for transient HID-contention failures
 #: before resorting to a bucket clear, and total clear+retry attempts after that.
@@ -267,10 +281,13 @@ class KrakenDevice:
         self._lcd_guard_active: bool = False
         #: Per-bucket result of the most recent ``_setup_bucket`` while guarding.
         self._lcd_setup_ok: dict[int, bool] = {}
-        #: Which of the two double-buffer LCD slots is currently displayed
-        #: (``None`` until the first sensor frame lands).  See
+        #: Believed position in the LCD bucket ring (0..``_LCD_RING_BUCKETS``-1) of
+        #: the frame last successfully switched to -- i.e. what *should* be on
+        #: screen.  ``None`` until the first sensor frame lands.  May drift from the
+        #: firmware's actual displayed bucket on a silent switch de-sync; the ring
+        #: is sized so that drift never blanks the panel.  See
         #: :meth:`set_lcd_sensor_frame`.
-        self._lcd_active_buffer: int | None = None
+        self._lcd_ring_pos: int | None = None
         #: True when the panel is NOT known to be in image/bucket display mode --
         #: a fresh connect, or after a liquid/static/gif :meth:`_set_screen` left it
         #: in firmware-liquid (or another) display mode.  The lightweight
@@ -403,10 +420,10 @@ class KrakenDevice:
             self._connected = True
             self._description = str(getattr(chosen, "description", "") or "")
             self._install_lcd_switch_guard(chosen)
-            # Fresh device: no double-buffer slot is displayed yet, and the panel
-            # is in its firmware-stored display mode -- force a full re-init on the
-            # first streamed frame so image display mode is established cleanly.
-            self._lcd_active_buffer = None
+            # Fresh device: no ring slot is displayed yet, and the panel is in its
+            # firmware-stored display mode -- force a full re-init on the first
+            # streamed frame so image display mode is established cleanly.
+            self._lcd_ring_pos = None
             self._lcd_stream_needs_reinit = True
             self._apply_init_status(init_status)
             logger.info(
@@ -585,17 +602,28 @@ class KrakenDevice:
     )
 
     def set_lcd_sensor_frame(self, image_path: str) -> bool:
-        """Upload one streamed sensor frame, flicker-free, via double-buffering.
+        """Upload one streamed sensor frame, flicker-free, via a bucket ring.
 
         Continuous frame streaming through the driver's ``set_screen`` glitches
         the panel: it rotates through 16 buckets (exhausting memory ~every 30
         frames, which forces a clear that flips to the firmware liquid screen),
         and it switches the display to each freshly-allocated bucket even on a
-        failed/partial write.  Instead we keep TWO fixed buckets at fixed memory
-        offsets and ping-pong: write the *inactive* one fully, then switch to it
-        only when every step succeeded.  The displayed bucket is never deleted or
-        overwritten mid-stream, there is no rotation/exhaustion (so no clears, no
-        liquid flash), and a failed upload simply leaves the previous frame up.
+        failed/partial write.  Instead we keep our own ring of
+        :data:`_LCD_RING_BUCKETS` fixed-offset buckets and write the OLDEST one
+        fully, then switch to it only when every step succeeded.  We never reuse a
+        bucket that could still be on screen, so there is no rotation/exhaustion
+        (no clears, no liquid flash) and a failed upload simply leaves the previous
+        frame up.
+
+        Crucially this also survives a *silent* switch de-sync: the driver's
+        ``_switch_bucket`` reads a reply and returns ``response[14] == 0x1``, which
+        on an out-of-order/stale reply can be a false positive -- the firmware
+        never actually switched, but we think it did.  With only two buckets the
+        next frame would then reuse (delete) the bucket actually on screen and the
+        panel goes black with nothing logged.  With a ring of N>=3 the bucket we
+        reuse is the oldest, never the displayed one (even after several
+        consecutive de-syncs), so the worst case is a one-frame-stale image that
+        self-corrects on the next good switch -- not a black screen.
 
         Falls back to :meth:`set_lcd_static` if the driver lacks the private
         primitives this relies on (it pins liquidctl, so they are present).
@@ -618,7 +646,7 @@ class KrakenDevice:
             ok = self._set_screen("static", str(image_path))
             if ok:
                 with self._lock:
-                    self._lcd_active_buffer = None
+                    self._lcd_ring_pos = None
                     self._lcd_stream_needs_reinit = False
             return ok
         with self._lock:
@@ -647,17 +675,22 @@ class KrakenDevice:
             header = [0x12, 0xFA, 0x01, 0xE8, 0xAB, 0xCD, 0xEF, 0x98, 0x76, 0x54, 0x32, 0x10] + bulk_info
             data_size = math.ceil((len(header) + len(data)) / 1024)
 
-            # Two non-overlapping fixed regions; pick the inactive slot/offset.
-            target = 0 if self._lcd_active_buffer in (None, 1) else 1
-            mem_offset = 0 if target == 0 else data_size
-            if 2 * data_size >= _LCD_TOTAL_MEMORY:  # frame too big to double-buffer
-                logger.debug("frame too large for double-buffer; using set_lcd_static")
+            # Ring of N fixed, non-overlapping regions. Advance to the next slot
+            # (the OLDEST, written N-1 frames ago) so we never reuse the bucket
+            # currently on screen -- even if our pointer has drifted from the
+            # firmware's after a silent switch de-sync.
+            region = _LCD_TOTAL_MEMORY // _LCD_RING_BUCKETS
+            if data_size >= region:  # frame too big for one ring slot
+                logger.debug("frame too large for the bucket ring; using set_lcd_static")
                 return self._set_screen("static", str(image_path))
+            prev = self._lcd_ring_pos
+            target = 0 if prev is None else (prev + 1) % _LCD_RING_BUCKETS
+            mem_offset = target * region
 
             try:
                 dev._write_then_read([0x36, 0x03])  # transfer preamble (per _send_data)
-                # Free only the INACTIVE target bucket (never the displayed one,
-                # so the panel keeps the current frame throughout).
+                # Reuse the OLDEST ring slot (target); with N>=3 it is never the
+                # displayed one, so the panel keeps its current frame throughout.
                 dev._delete_bucket(target)
                 if not dev._setup_bucket(
                     target,
@@ -675,7 +708,7 @@ class KrakenDevice:
                 if not dev._switch_bucket(target):
                     logger.debug("sensor frame: switch to bucket %d failed; holding frame", target)
                     return False
-                self._lcd_active_buffer = target
+                self._lcd_ring_pos = target
                 return True
             except Exception:
                 logger.exception("sensor frame: bulk transfer failed; marking disconnected")

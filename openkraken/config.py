@@ -311,18 +311,19 @@ class AppConfig:
     #: blacks the panel). The firmware screen shows during the wait; 0 disables.
     #: Only applies near boot (low system uptime); manual restarts apply at once.
     lcd_startup_grace_s: float = 25.0
-    #: LCD self-heal: periodically re-assert the sensor screen (a full image-mode
-    #: re-init) so a silently-blacked panel recovers on its own.  The panel can't be
-    #: read back, so this can't *detect* black -- it re-asserts unconditionally on a
-    #: schedule.  An HID reply de-sync ("missing messages") can make a bucket switch
-    #: falsely report success, de-syncing the double-buffer until the displayed
-    #: bucket is deleted -> black with nothing logged; this is the recovery.
-    #: Cadence is fast for the first ``lcd_selfheal_boot_phase_s`` of streaming
-    #: (``lcd_selfheal_boot_interval_s``) then ``lcd_selfheal_interval_s`` in steady
-    #: state.  Set the steady interval to 0 to disable self-heal entirely.
-    lcd_selfheal_interval_s: float = 900.0  # steady state (15 min); 0 disables
-    lcd_selfheal_boot_interval_s: float = 60.0  # faster cadence right after boot
-    lcd_selfheal_boot_phase_s: float = 300.0  # how long the fast cadence lasts
+    #: LCD self-heal: periodically re-assert the sensor screen (the full
+    #: liquid->image mode-cycle recovery) as a *backstop*.  The bucket ring
+    #: (device._LCD_RING_BUCKETS) already prevents a silent switch de-sync from
+    #: blanking the panel, so this is only needed for a rarer burst that exceeds
+    #: the ring's tolerance -- hence it runs infrequently.  The panel can't be read
+    #: back, so it re-asserts unconditionally on a schedule (each is a brief screen
+    #: flash).  Cadence is ``lcd_selfheal_boot_interval_s`` for the first
+    #: ``lcd_selfheal_boot_phase_s`` of streaming (the boot HID storm), then
+    #: ``lcd_selfheal_interval_s`` in steady state.  Set the steady interval to 0
+    #: to disable the steady backstop entirely.
+    lcd_selfheal_interval_s: float = 3600.0  # steady-state backstop (1 h); 0 disables
+    lcd_selfheal_boot_interval_s: float = 120.0  # gentler cadence right after boot
+    lcd_selfheal_boot_phase_s: float = 300.0  # how long the boot cadence lasts
     #: Quietly check GitHub for a newer version on launch (only surfaces a notice
     #: in Settings when an update is actually available).
     check_updates_on_start: bool = True
