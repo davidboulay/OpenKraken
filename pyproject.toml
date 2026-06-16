@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "openkraken"
-version = "0.2.3"
+version = "0.2.4"
 description = "A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl)."
 readme = "README.md"
 license = { text = "MIT" }
