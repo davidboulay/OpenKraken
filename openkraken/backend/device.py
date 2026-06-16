@@ -54,6 +54,14 @@ _LCD_TOTAL_MEMORY = 24320
 #: bursts). See :meth:`set_lcd_sensor_frame`.
 _LCD_RING_BUCKETS = 6
 
+#: Per-slot memory size (in 1024-byte units) for the bucket ring.  Slots are
+#: PACKED at ``slot_index * _LCD_BUCKET_SLOT`` near offset 0 -- the firmware
+#: rejects ``_setup_bucket`` at large memory offsets, so the slot must be only a
+#: generous bound on one rendered frame (observed ~28), NOT memory/N.  Frames
+#: larger than this fall back to the driver's static path.  N * slot must stay
+#: well under :data:`_LCD_TOTAL_MEMORY` (6 * 128 = 768 << 24320).
+_LCD_BUCKET_SLOT = 128
+
 #: Plain (no-clear) re-upload attempts for transient HID-contention failures
 #: before resorting to a bucket clear, and total clear+retry attempts after that.
 #: Kept small: each plain retry consumes a fresh bucket, so over-retrying just
@@ -678,14 +686,18 @@ class KrakenDevice:
             # Ring of N fixed, non-overlapping regions. Advance to the next slot
             # (the OLDEST, written N-1 frames ago) so we never reuse the bucket
             # currently on screen -- even if our pointer has drifted from the
-            # firmware's after a silent switch de-sync.
-            region = _LCD_TOTAL_MEMORY // _LCD_RING_BUCKETS
-            if data_size >= region:  # frame too big for one ring slot
+            # firmware's after a silent switch de-sync. Slots are packed tightly
+            # near offset 0 (slot size = a generous bound on one frame): the
+            # firmware rejects bucket setups at large memory offsets, so spreading
+            # slots across the full memory makes every non-zero slot fail. Packed
+            # small offsets mirror the original adjacent two-buffer layout.
+            slot = _LCD_BUCKET_SLOT
+            if data_size >= slot:  # frame too big for one ring slot
                 logger.debug("frame too large for the bucket ring; using set_lcd_static")
                 return self._set_screen("static", str(image_path))
             prev = self._lcd_ring_pos
             target = 0 if prev is None else (prev + 1) % _LCD_RING_BUCKETS
-            mem_offset = target * region
+            mem_offset = target * slot
 
             try:
                 dev._write_then_read([0x36, 0x03])  # transfer preamble (per _send_data)
