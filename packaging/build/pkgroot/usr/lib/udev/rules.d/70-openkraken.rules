@@ -1,3 +1,0 @@
-# OpenKraken — non-root access to NZXT devices over raw USB HID.
-# Covers the Kraken 2024 Elite RGB (1e71:3012) and all other NZXT (1e71) gear.
-SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
