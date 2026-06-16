@@ -540,10 +540,12 @@ class KrakenDevice:
         """Force the next streamed sensor frame through the full image-mode path.
 
         Sets the same flag a fresh connect / mode switch sets, so the next
-        :meth:`set_lcd_sensor_frame` re-establishes image display mode and resets
-        the double-buffer.  Used by the engine's periodic LCD self-heal to recover
-        a silently-blacked panel (an HID reply de-sync can desync the double-buffer
-        with no error logged; the panel can't be read back to detect it).
+        :meth:`set_lcd_sensor_frame` runs the full liquid->image mode-cycle
+        recovery (the automated form of the manual "switch LCD mode and back")
+        and resets the double-buffer.  Used by the engine's periodic LCD self-heal
+        to recover a silently-blacked panel (an HID reply de-sync can desync the
+        double-buffer with no error logged; the panel can't be read back to detect
+        it, so the recovery runs unconditionally on a schedule).
         """
         self._lcd_stream_needs_reinit = True
 
@@ -599,14 +601,20 @@ class KrakenDevice:
         primitives this relies on (it pins liquidctl, so they are present).
         Returns ``True`` only when a new frame reached the panel.
         """
-        # First frame after a fresh connect or a liquid/static/gif switch: the
-        # panel may not be in image display mode, and the lightweight double-buffer
-        # ``_switch_bucket`` cannot establish it -- so the switch "succeeds" but the
-        # panel shows an empty bucket (black) with no error.  Route this one frame
-        # through the driver's full ``set_screen("static")`` path (which sets image
-        # display mode), then reset the double-buffer and resume streaming.  Done
-        # outside the lock because ``_set_screen`` acquires it itself.
+        # First frame after a fresh connect, a liquid/static/gif switch, or a
+        # self-heal: re-establish the panel's image display mode.  A plain static
+        # re-push only does a mode-0x4 bucket switch -- the very op that silently
+        # false-positives on an HID reply de-sync, so it CANNOT un-wedge a panel
+        # that has silently gone black (proven in the field: repeated static
+        # re-pushes left the screen black).  Replicate the manual recovery that
+        # DOES work -- "switch to another LCD mode and back": force the firmware
+        # into its built-in liquid display mode first (mode 0x2, a deeper reset of
+        # the display pipeline + bucket memory), THEN re-establish image mode with
+        # the static upload.  ``set_screen("liquid")`` is called directly (not via
+        # set_lcd_liquid_mode) so it doesn't re-arm the reinit flag.  Done outside
+        # the lock because ``_set_screen`` acquires it itself.
         if self._lcd_stream_needs_reinit:
+            self._set_screen("liquid", None)  # deep display-pipeline reset (un-wedge)
             ok = self._set_screen("static", str(image_path))
             if ok:
                 with self._lock:
