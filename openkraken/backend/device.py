@@ -51,16 +51,10 @@ _LCD_TOTAL_MEMORY = 24320
 #: and ample memory (each slot here is _LCD_TOTAL_MEMORY/N >> a frame), so 6 is
 #: cheap and tolerates a burst of up to N-2 = 4 consecutive de-syncs before the
 #: reuse pointer could reach the displayed bucket (the self-heal covers rarer
-#: bursts). See :meth:`set_lcd_sensor_frame`.
+#: bursts). Slots are packed contiguously, one frame (``data_size``) wide each,
+#: so N * data_size must stay under :data:`_LCD_TOTAL_MEMORY` (6 * ~1601 = ~9.6k
+#: << 24320 for the 640x640 raw-RGBA frame). See :meth:`set_lcd_sensor_frame`.
 _LCD_RING_BUCKETS = 6
-
-#: Per-slot memory size (in 1024-byte units) for the bucket ring.  Slots are
-#: PACKED at ``slot_index * _LCD_BUCKET_SLOT`` near offset 0 -- the firmware
-#: rejects ``_setup_bucket`` at large memory offsets, so the slot must be only a
-#: generous bound on one rendered frame (observed ~28), NOT memory/N.  Frames
-#: larger than this fall back to the driver's static path.  N * slot must stay
-#: well under :data:`_LCD_TOTAL_MEMORY` (6 * 128 = 768 << 24320).
-_LCD_BUCKET_SLOT = 128
 
 #: Plain (no-clear) re-upload attempts for transient HID-contention failures
 #: before resorting to a bucket clear, and total clear+retry attempts after that.
@@ -683,21 +677,23 @@ class KrakenDevice:
             header = [0x12, 0xFA, 0x01, 0xE8, 0xAB, 0xCD, 0xEF, 0x98, 0x76, 0x54, 0x32, 0x10] + bulk_info
             data_size = math.ceil((len(header) + len(data)) / 1024)
 
-            # Ring of N fixed, non-overlapping regions. Advance to the next slot
-            # (the OLDEST, written N-1 frames ago) so we never reuse the bucket
-            # currently on screen -- even if our pointer has drifted from the
-            # firmware's after a silent switch de-sync. Slots are packed tightly
-            # near offset 0 (slot size = a generous bound on one frame): the
-            # firmware rejects bucket setups at large memory offsets, so spreading
-            # slots across the full memory makes every non-zero slot fail. Packed
-            # small offsets mirror the original adjacent two-buffer layout.
-            slot = _LCD_BUCKET_SLOT
-            if data_size >= slot:  # frame too big for one ring slot
-                logger.debug("frame too large for the bucket ring; using set_lcd_static")
+            # Ring of N CONTIGUOUS, non-overlapping slots, each exactly one frame
+            # wide (``data_size`` -- raw RGBA, constant for a given resolution).
+            # Advance to the next slot (the OLDEST, written N-1 frames ago) so we
+            # never reuse the bucket currently on screen even if our pointer has
+            # drifted from the firmware's after a silent switch de-sync. Slots are
+            # packed back-to-back from offset 0 (slot i at i*data_size), mirroring
+            # the original adjacent two-buffer layout: the firmware accepts
+            # contiguous bucket memory but rejects a setup that leaves a GAP (an
+            # earlier attempt that spaced slots across all memory failed setup on
+            # every non-zero slot -> every frame fell back to set_screen("static"),
+            # i.e. a full per-frame reload).
+            if _LCD_RING_BUCKETS * data_size >= _LCD_TOTAL_MEMORY:
+                logger.debug("frame too big to fit the bucket ring; using set_lcd_static")
                 return self._set_screen("static", str(image_path))
             prev = self._lcd_ring_pos
             target = 0 if prev is None else (prev + 1) % _LCD_RING_BUCKETS
-            mem_offset = target * slot
+            mem_offset = target * data_size
 
             try:
                 dev._write_then_read([0x36, 0x03])  # transfer preamble (per _send_data)
