@@ -56,6 +56,16 @@ _LCD_TOTAL_MEMORY = 24320
 #: << 24320 for the 640x640 raw-RGBA frame). See :meth:`set_lcd_sensor_frame`.
 _LCD_RING_BUCKETS = 6
 
+#: Consecutive streamed-frame failures (the firmware rejecting bucket delete/setup
+#: with status 0x09/0x04 -- a wedged LCD bucket memory) after which we force a full
+#: device RECONNECT to recover.  Verified in the field: the in-process liquid->image
+#: re-assert does NOT clear this wedge (it persisted through 6 self-heals over an
+#: hour), but a fresh ``connect()`` + ``initialize()`` does.  ~4 * the sensor
+#: interval (~8 s) before recovery kicks in; small enough to recover fast, large
+#: enough not to reconnect on a lone transient hiccup. See
+#: :meth:`set_lcd_sensor_frame` / :meth:`_note_lcd_frame_stuck`.
+_LCD_FAIL_RECONNECT_THRESHOLD = 4
+
 #: Plain (no-clear) re-upload attempts for transient HID-contention failures
 #: before resorting to a bucket clear, and total clear+retry attempts after that.
 #: Kept small: each plain retry consumes a fresh bucket, so over-retrying just
@@ -290,6 +300,10 @@ class KrakenDevice:
         #: is sized so that drift never blanks the panel.  See
         #: :meth:`set_lcd_sensor_frame`.
         self._lcd_ring_pos: int | None = None
+        #: Count of consecutive streamed-frame bucket failures, to trigger a
+        #: reconnect once the firmware's LCD memory is wedged (see
+        #: :data:`_LCD_FAIL_RECONNECT_THRESHOLD` / :meth:`_note_lcd_frame_stuck`).
+        self._lcd_consec_fail: int = 0
         #: True when the panel is NOT known to be in image/bucket display mode --
         #: a fresh connect, or after a liquid/static/gif :meth:`_set_screen` left it
         #: in firmware-liquid (or another) display mode.  The lightweight
@@ -650,6 +664,7 @@ class KrakenDevice:
                 with self._lock:
                     self._lcd_ring_pos = None
                     self._lcd_stream_needs_reinit = False
+                    self._lcd_consec_fail = 0
             return ok
         with self._lock:
             if self._dev is None or not self._connected:
@@ -706,22 +721,52 @@ class KrakenDevice:
                     list(mem_offset.to_bytes(2, "little")),
                     list(data_size.to_bytes(2, "little")),
                 ):
-                    logger.debug("sensor frame: setup bucket %d failed; holding frame", target)
-                    return False
+                    return self._note_lcd_frame_stuck("setup bucket %d" % target)
                 dev._write_then_read([0x36, 0x01, target])  # begin data transfer
                 dev._bulk_write(header)
                 for i in range(0, len(data), dev.bulk_buffer_size):
                     dev._bulk_write(list(data[i : i + dev.bulk_buffer_size]))
                 dev._write([0x36, 0x02])  # end data transfer
                 if not dev._switch_bucket(target):
-                    logger.debug("sensor frame: switch to bucket %d failed; holding frame", target)
-                    return False
+                    return self._note_lcd_frame_stuck("switch to bucket %d" % target)
                 self._lcd_ring_pos = target
+                self._lcd_consec_fail = 0  # frame reached the panel; clear streak
                 return True
             except Exception:
                 logger.exception("sensor frame: bulk transfer failed; marking disconnected")
                 self._mark_disconnected()
                 return False
+
+    def _note_lcd_frame_stuck(self, what: str) -> bool:
+        """Record a held LCD frame; reconnect once the bucket memory is wedged.
+
+        A few consecutive bucket setup/switch failures (firmware rejecting them
+        with status 0x09/0x04) mean the LCD's bucket memory is wedged.  The
+        in-process liquid->image re-assert does NOT clear this (verified: it
+        survived 6 self-heals over an hour) -- only a full device reconnect
+        (re-open + ``initialize()``) does.  So after
+        :data:`_LCD_FAIL_RECONNECT_THRESHOLD` held frames in a row, drop the device
+        and let the engine's reconnect loop re-open it and re-apply the LCD.  Caller
+        holds the lock; ``_mark_disconnected`` is re-entrant-safe under the RLock.
+        Always returns ``False`` (this frame did not reach the panel).
+        """
+        self._lcd_consec_fail += 1
+        if self._lcd_consec_fail >= _LCD_FAIL_RECONNECT_THRESHOLD:
+            logger.warning(
+                "LCD %s failed %d× in a row (bucket memory wedged); reconnecting to recover",
+                what,
+                self._lcd_consec_fail,
+            )
+            self._lcd_consec_fail = 0
+            self._mark_disconnected()
+        else:
+            logger.debug(
+                "sensor frame: %s failed; holding frame (%d/%d before reconnect)",
+                what,
+                self._lcd_consec_fail,
+                _LCD_FAIL_RECONNECT_THRESHOLD,
+            )
+        return False
 
     def clear_lcd_media(self) -> bool:
         """Erase all media stored in the cooler's onboard LCD memory.
