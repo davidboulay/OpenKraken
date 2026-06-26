@@ -307,6 +307,13 @@ class ControlEngine(QThread):
         # OpenRGB scan, etc.) which intermittently corrupts the panel to black.
         # The firmware screen shows during the wait; cooling/lighting apply at once.
         self._lcd_apply_pending_until: float | None = None
+        # Boot cooling re-apply: a curve written during the early-boot HID storm is
+        # accepted (the write returns ok) but the firmware doesn't honour it -- the
+        # pump/fan run their firmware default until re-applied. Cooling is written
+        # once (firmware runs it autonomously), so unlike the streamed LCD it is
+        # never re-sent. When starting during boot we therefore re-apply the curves
+        # once more after this monotonic deadline (the same grace as the LCD).
+        self._cooling_reapply_pending_until: float | None = None
         # LCD self-heal: monotonic time sensor streaming (re)started this connect,
         # and the last forced re-assert. Used to periodically re-establish image
         # display mode so a silently-blacked panel recovers (the panel can't be
@@ -465,6 +472,7 @@ class ControlEngine(QThread):
 
                 # 4. Fire a deferred boot-time LCD apply once its grace elapses,
                 #    then push an LCD sensor frame if due.
+                self._tick_deferred_cooling()
                 self._tick_deferred_lcd()
                 self._tick_lcd_selfheal()
                 self._tick_lcd_sensors(status, snap)
@@ -535,12 +543,18 @@ class ControlEngine(QThread):
         if defer_lcd:
             grace = float(getattr(self._config, "lcd_startup_grace_s", 0.0) or 0.0)
             self._lcd_apply_pending_until = time.monotonic() + grace
+            # The immediate cooling write above may not have stuck (boot HID storm);
+            # re-apply the curves once after the same grace so a dropped boot write
+            # doesn't leave the pump/fan on the firmware default until a manual apply.
+            self._cooling_reapply_pending_until = time.monotonic() + grace
             _LOGGER.info(
-                "deferring LCD apply %.0fs (boot grace) to avoid early HID contention",
+                "deferring LCD apply %.0fs (boot grace) to avoid early HID contention; "
+                "cooling will re-apply after the same grace",
                 grace,
             )
         else:
             self._lcd_apply_pending_until = None
+            self._cooling_reapply_pending_until = None
             self._do_apply_lcd(self._lcd_cfg)
 
     # ------------------------------------------------------------------ #
@@ -677,6 +691,24 @@ class ControlEngine(QThread):
         if self._device.is_connected:
             _LOGGER.info("boot grace elapsed; applying LCD now")
             self._do_apply_lcd(self._lcd_cfg)
+
+    def _tick_deferred_cooling(self) -> None:
+        """Re-apply pump/fan curves once after the boot grace.
+
+        A curve written during the early-boot HID storm can be accepted yet not
+        honoured by the firmware (the pump/fan keep their default until re-applied).
+        Re-asserting the configured curves once the grace has elapsed makes the
+        boot-time setting stick without a manual apply.  Idempotent.
+        """
+        if self._cooling_reapply_pending_until is None:
+            return
+        if time.monotonic() < self._cooling_reapply_pending_until:
+            return
+        self._cooling_reapply_pending_until = None
+        if self._device.is_connected:
+            _LOGGER.info("boot grace elapsed; re-applying cooling curves")
+            self._do_apply_channel("pump", self._config.pump)
+            self._do_apply_channel("fan", self._config.fan)
 
     # ------------------------------------------------------------------ #
     # Loop step 4: LCD sensor frames.
