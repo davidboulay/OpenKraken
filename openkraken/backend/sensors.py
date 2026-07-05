@@ -12,10 +12,12 @@ file:
 * CPU temperature: ``k10temp`` (AMD), preferring the ``Tctl`` label, else the
   first ``tempN_input``.  ``coretemp`` (Intel, label ``Package id 0``) and
   ``zenpower`` are also accepted for portability.
-* GPU: ``amdgpu`` -- temperature label ``edge`` preferred, then ``junction``.
-  ``gpu_busy_percent``, ``mem_info_vram_used`` and ``mem_info_vram_total`` live
-  in the hwmon's ``device/`` subdirectory; power comes from ``power1_average``
-  (falling back to ``power1_input``), in microwatts.
+* GPU: a discrete NVIDIA card is preferred when present, read via NVML
+  (``pynvml``, no per-sample process spawn) if installed, else ``nvidia-smi``.
+  Otherwise the ``amdgpu`` hwmon is used -- temperature label ``edge`` preferred,
+  then ``junction``; ``gpu_busy_percent``, ``mem_info_vram_used`` and
+  ``mem_info_vram_total`` live in the hwmon's ``device/`` subdirectory; power
+  comes from ``power1_average`` (falling back to ``power1_input``), in microwatts.
 
 CPU load is computed from the aggregate ``cpu`` line of ``/proc/stat`` as the
 busy fraction between successive :meth:`read` calls -- the first call therefore
@@ -135,6 +137,10 @@ class SystemSensors:
         self.gpu_vendor: str | None = None
         #: Cached ``nvidia-smi`` path ("" = absent, None = not yet probed).
         self._nvidia_smi: str | None = None
+        #: NVML (pynvml) state: None = not yet tried, True/False = ready/unavailable.
+        self._nvml_ready: bool | None = None
+        self._nvml: object | None = None  # the pynvml module, once imported
+        self._nvml_handle: object | None = None  # cached device handle
         self._detect_vendors()
 
         self.rescan()
@@ -313,9 +319,12 @@ class SystemSensors:
         cpu_temp = self._read_cpu_temp()
         cpu_load = self._read_cpu_load()
         cpu_freq = self._read_cpu_freq_mhz()
-        # Prefer the discrete NVIDIA GPU (via nvidia-smi) when present so the
-        # readings match the NVIDIA badge; otherwise use the amdgpu hwmon.
-        nv = self._read_nvidia() if self.gpu_vendor == "nvidia" else None
+        # Prefer the discrete NVIDIA GPU when present so the readings match the
+        # NVIDIA badge: NVML (no per-sample process spawn) first, then nvidia-smi
+        # as a fallback; otherwise use the amdgpu hwmon.
+        nv = None
+        if self.gpu_vendor == "nvidia":
+            nv = self._read_nvidia_nvml() or self._read_nvidia()
         if nv is not None:
             gpu_temp, gpu_load, vram_used, vram_total, gpu_power = nv
         else:
@@ -346,6 +355,59 @@ class SystemSensors:
         if millidegrees is None:
             return None
         return millidegrees / 1000.0
+
+    def _read_nvidia_nvml(
+        self,
+    ) -> tuple[float | None, float | None, float | None, float | None, float | None] | None:
+        """Query the NVIDIA GPU via NVML (``pynvml``); return metrics or ``None``.
+
+        Returns ``(temp_c, load_pct, vram_used_mb, vram_total_mb, power_w)``.
+        Preferred over :meth:`_read_nvidia` because NVML reads through the C
+        library with no per-sample process spawn.  Lazily initialised once; if
+        ``pynvml`` is missing or NVML init fails it disables itself and returns
+        ``None`` permanently (the caller then falls back to ``nvidia-smi``).  A
+        per-sample failure also returns ``None`` for that sample.  Never raises.
+        """
+        if self._nvml_ready is False:
+            return None
+        if self._nvml_ready is None:
+            self._nvml_ready = False  # pessimistic until init proves otherwise
+            try:
+                import pynvml
+            except ImportError:
+                _LOGGER.info("pynvml not installed; using nvidia-smi for NVIDIA GPU")
+                return None
+            try:
+                pynvml.nvmlInit()
+                self._nvml_handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            except Exception as exc:  # NVML lib/driver mismatch, no device, etc.
+                _LOGGER.info("NVML init failed (%s); using nvidia-smi", exc)
+                return None
+            self._nvml = pynvml
+            self._nvml_ready = True
+            _LOGGER.info("NVIDIA GPU telemetry via NVML")
+
+        nv = self._nvml
+        handle = self._nvml_handle
+
+        def _try(fn):
+            try:
+                return fn()
+            except Exception:
+                return None
+
+        temp = _try(lambda: float(nv.nvmlDeviceGetTemperature(handle, nv.NVML_TEMPERATURE_GPU)))
+        load = _try(lambda: float(nv.nvmlDeviceGetUtilizationRates(handle).gpu))
+        mem = _try(lambda: nv.nvmlDeviceGetMemoryInfo(handle))
+        power = _try(lambda: nv.nvmlDeviceGetPowerUsage(handle) / 1000.0)  # mW -> W
+        vram_used = mem.used / _MB if mem is not None else None
+        vram_total = mem.total / _MB if mem is not None else None
+
+        # If every field failed NVML has effectively gone away for this sample;
+        # return None so the caller can fall back to nvidia-smi.
+        if temp is None and load is None and mem is None and power is None:
+            return None
+        return (temp, load, vram_used, vram_total, power)
 
     def _read_nvidia(
         self,

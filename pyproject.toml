@@ -36,6 +36,9 @@ dependencies = [
 
 [project.optional-dependencies]
 gui = ["PyQt6>=6.4"]
+# NVIDIA GPU telemetry via NVML (no per-sample nvidia-smi process spawn).
+# Optional: without it the code falls back to nvidia-smi.
+nvidia = ["nvidia-ml-py>=12"]
 
 [project.urls]
 Homepage = "https://github.com/davidboulay/OpenKraken"
