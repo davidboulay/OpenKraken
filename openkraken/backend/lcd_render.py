@@ -30,6 +30,9 @@ from __future__ import annotations
 
 import logging
 import math
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -94,9 +97,13 @@ _LIQUID_MAX = 60.0
 
 _PLACEHOLDER = "--"
 
-# Font candidate chain (per spec).
+# Bold sans-serif font candidates, tried in order. Absolute distro paths first
+# (fast, and preserves the intended DejaVu look), then a bare name PIL can find.
+# If none resolve, _font() falls back to fontconfig (see _fontconfig_bold_sans).
 _FONT_CANDIDATES = (
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",    # Debian/Ubuntu
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",  # Fedora
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",                # Arch
     "DejaVuSans-Bold.ttf",
 )
 
@@ -133,12 +140,47 @@ class LcdData:
 
 _FONT_CACHE: dict[int, ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
 
+# Resolved bold sans-serif path from fontconfig (see _fontconfig_bold_sans).
+# `_UNRESOLVED` distinguishes "not looked up yet" from "looked up, found nothing".
+_UNRESOLVED = object()
+_FC_FONT_FILE: str | None | object = _UNRESOLVED
+
+
+def _fontconfig_bold_sans() -> str | None:
+    """Return a bold sans-serif TTF path via ``fc-match`` (cached), or None.
+
+    Used when the hardcoded :data:`_FONT_CANDIDATES` are absent, so distros that
+    don't ship DejaVu at the expected path (e.g. Fedora) still get a real
+    TrueType font instead of PIL's low-res default bitmap.
+    """
+    global _FC_FONT_FILE
+    if _FC_FONT_FILE is not _UNRESOLVED:
+        return _FC_FONT_FILE  # type: ignore[return-value]
+
+    _FC_FONT_FILE = None
+    fc_match = shutil.which("fc-match")
+    if fc_match is not None:
+        for query in ("DejaVu Sans:style=Bold", "sans-serif:style=Bold"):
+            try:
+                out = subprocess.run(
+                    [fc_match, "-f", "%{file}", query],
+                    capture_output=True, text=True, timeout=5, check=False,
+                ).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                continue
+            if out and os.path.isfile(out):
+                _LOGGER.info("LCD font resolved via fontconfig: %s", out)
+                _FC_FONT_FILE = out
+                break
+    return _FC_FONT_FILE  # type: ignore[return-value]
+
 
 def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
     """Return a bold font of *size* px, cached at module level by size.
 
-    Tries the DejaVuSans-Bold candidate chain, then falls back to the bundled
-    PIL default font (which still honours ``size`` on Pillow >= 10).
+    Tries the :data:`_FONT_CANDIDATES` chain, then fontconfig (``fc-match``) for
+    a bold sans-serif, and only as a last resort the bundled PIL default font
+    (which still honours ``size`` on Pillow >= 10).
     """
     cached = _FONT_CACHE.get(size)
     if cached is not None:
@@ -153,8 +195,16 @@ def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
             continue
 
     if font is None:
+        path = _fontconfig_bold_sans()
+        if path is not None:
+            try:
+                font = ImageFont.truetype(path, size)
+            except OSError:
+                font = None
+
+    if font is None:
         _LOGGER.warning(
-            "DejaVuSans-Bold not found; falling back to PIL default font at %d px",
+            "no bold TrueType font found; using PIL default font at %d px",
             size,
         )
         try:
