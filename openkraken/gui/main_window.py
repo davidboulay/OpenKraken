@@ -427,11 +427,17 @@ class MainWindow(QMainWindow):
         bar.setStyleSheet(f"color: {theme.COLORS['crit']};")
         bar.showMessage(f"Error: {message}", _ERROR_MSG_MS)
         # Clear the red styling once the message expires.  Connect with a unique
-        # connection so repeated errors do not stack duplicate slots.
-        bar.messageChanged.connect(
-            self._on_status_message_changed,
-            Qt.ConnectionType.UniqueConnection,
-        )
+        # connection so repeated errors do not stack duplicate slots.  In PyQt6,
+        # re-connecting an already-connected unique slot raises TypeError (unlike
+        # C++ Qt's silent no-op); that "already armed" state is exactly what we
+        # want, so ignore it — otherwise back-to-back errors crash the GUI.
+        try:
+            bar.messageChanged.connect(
+                self._on_status_message_changed,
+                Qt.ConnectionType.UniqueConnection,
+            )
+        except TypeError:
+            pass
 
     def _on_status_message_changed(self, text: str) -> None:
         if not text:
