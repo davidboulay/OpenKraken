@@ -94,6 +94,14 @@ cd openkraken
 5. Installs an `openkraken.desktop` launcher into
    `~/.local/share/applications/` with absolute `Exec`/`Icon` paths.
 
+## Optional extras
+
+- **NVIDIA GPU via NVML** — `.venv/bin/pip install -e '.[nvidia]'`. Reads a
+  discrete NVIDIA GPU through NVML (`nvidia-ml-py`) instead of spawning
+  `nvidia-smi` on every sample, which is much lighter. Optional: without it
+  OpenKraken falls back to `nvidia-smi`, and without either the AMD `amdgpu`
+  hwmon is used.
+
 ## Run
 
 From a terminal:
