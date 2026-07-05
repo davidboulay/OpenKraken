@@ -678,7 +678,15 @@ class KrakenDevice:
                 return self._set_screen("static", str(image_path))
 
             try:
-                data = dev._prepare_static_file(str(image_path), getattr(dev, "orientation", 0))
+                # Pre-rotate with our own authoritative orientation (degrees ->
+                # raw 0..3), NOT the liquidctl driver's ``dev.orientation``.  The
+                # latter is only refreshed as a side effect of ``set_screen`` and
+                # is left stale after an orientation change (it holds the value
+                # read *before* the write), and can even be garbage on an HID
+                # reply de-sync -- both of which rotated streamed sensor frames to
+                # the wrong / seemingly "random" direction and made orientation
+                # appear to change across restarts.
+                data = dev._prepare_static_file(str(image_path), self.lcd_orientation // 90)
             except _RECOVERABLE_SCREEN_ERRORS as exc:
                 logger.warning("sensor frame: image prepare failed (%s)", exc)
                 return False
