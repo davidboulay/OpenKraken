@@ -1,23 +1,36 @@
-# OpenKraken
+<div align="center">
 
-*A native Linux desktop app for NZXT Kraken liquid coolers — monitor, tune curves, and drive the LCD without rebooting into Windows.*
+<img src="openkraken/resources/openkraken.svg" alt="" width="104" height="104">
 
-A Linux clone of **NZXT CAM** for the **NZXT Kraken 2024 Elite RGB** all-in-one
-liquid cooler, built with **PyQt6** on top of [**liquidctl**](https://github.com/liquidctl/liquidctl).
+<h1>OpenKraken</h1>
 
-NZXT does not ship CAM for Linux. OpenKraken gives you a native desktop app to
-monitor your loop, drive pump/fan curves that run in the cooler's own firmware,
-and push live sensor screens, images, and GIFs to the round LCD — without
-rebooting into Windows.
+**NZXT Kraken control for Linux** — monitor your loop, tune firmware fan curves,<br>
+and drive the round LCD, without rebooting into Windows.
 
-> Status: early but functional (`0.1.0`). Targets the Kraken 2024 Elite RGB
-> (USB `1e71:3012`) but works with any `KrakenZ3`-class cooler liquidctl supports.
+[![Release](https://img.shields.io/github/v/release/davidboulay/OpenKraken?style=flat-square&color=7C3AED&labelColor=1c1c1e)](https://github.com/davidboulay/OpenKraken/releases/latest)
+[![APT repo](https://img.shields.io/badge/apt-davidboulay.github.io%2FOpenKraken-7C3AED?style=flat-square&labelColor=1c1c1e)](https://davidboulay.github.io/OpenKraken/)
+[![Platform](https://img.shields.io/badge/Linux-FC6F8C?style=flat-square&labelColor=1c1c1e&label=runs%20on)](#get-openkraken)
+[![License](https://img.shields.io/github/license/davidboulay/OpenKraken?style=flat-square&color=6b7280&labelColor=1c1c1e)](LICENSE)
 
-## Screenshots
+[**Install**](#get-openkraken) · [Features](#features) · [Updating](#updating) · [Permissions](#permissions) · [Supported devices](#supported-devices) · [FAQ](#faq)
 
-A rendered sensor screen running on the cooler's round LCD:
+</div>
+
+<br>
+
+NZXT does not ship CAM for Linux. OpenKraken is a native **PyQt6** desktop app on
+top of [**liquidctl**](https://github.com/liquidctl/liquidctl): live gauges and
+graphs for your loop, pump/fan **curves that run inside the cooler's own
+firmware**, live **sensor screens / images / GIFs** on the round LCD, and RGB
+lighting over a community-reverse-engineered protocol.
+
+Developed on **Pop!_OS / COSMIC / Wayland** against a **Kraken 2024 Elite RGB**;
+works with any `KrakenZ3`-class cooler liquidctl recognises, on GNOME, KDE, and
+other desktops.
 
 ![OpenKraken sensor screen on an NZXT Kraken 2024 Elite](docs/images/cooler.png)
+
+<sub>**The cooler itself** — a live sensor screen rendered by OpenKraken on the 640×640 LCD: liquid ring, CPU/GPU temps with vendor badges.</sub>
 
 | Dashboard | Cooling |
 | --- | --- |
@@ -25,8 +38,8 @@ A rendered sensor screen running on the cooler's round LCD:
 | **LCD** | **Lighting** |
 | ![LCD control](docs/images/lcd.png) | ![RGB lighting](docs/images/lighting.png) |
 
-> The AMD / NVIDIA marks on the LCD sensor screen are user-supplied logo files
-> (see *Custom vendor logos* above); OpenKraken ships none.
+<sub>The AMD / NVIDIA marks on the LCD sensor screen are user-supplied logo files
+(see [Custom vendor logos](#features)); OpenKraken ships none.</sub>
 
 ## Features
 
@@ -40,42 +53,58 @@ A rendered sensor screen running on the cooler's round LCD:
     even after OpenKraken is closed.
   - **CPU/GPU-temp curves** are driven by the app each tick, with a firmware
     failsafe baked in so a crashed app can never cook the loop.
-- **LCD screen control** for the 640×640 round display:
+- **LCD screen control** for the round display:
   - Firmware liquid-temp screen
   - Live **sensor screens** rendered on the host and uploaded over USB
     (multiple styles), with a configurable liquid-ring colour and
     auto-detected CPU/GPU **vendor badges** (AMD / Intel / NVIDIA)
   - **Static images** and **animated GIFs**
   - Brightness, orientation (0/90/180/270°), and a software "off"
-
-  *Custom vendor logos:* the sensor screens show a stylised vendor wordmark by
-  default. To use official logo artwork instead, drop your own RGBA PNGs at
-  `~/.config/openkraken/logos/{amd,intel,nvidia}.png` — OpenKraken ships no
-  trademarked logos.
+  - Self-healing: a wedged panel (a firmware quirk this device has) is detected
+    and recovered automatically — no more black screens
 - **RGB lighting** (off by default) for the 24-LED pump ring and the bundled
-  RGB Core fan chain: solid colours plus host-streamed Breathing / Color cycle /
-  Spectrum effects, with per-channel brightness. The wire protocol was
-  reverse-engineered by the community (liquidctl PR #882 / OpenRGB) since NZXT
-  ships no public spec; effects stream from the app at the device's ~1 frame/s
-  ceiling. See the [FAQ](#faq) for the caveats.
-- **System tray** with quick profile switching and close-to-tray.
+  RGB Core fan chain: solid colours plus smooth host-streamed Breathing /
+  Color cycle / Spectrum effects, with per-channel brightness. See the
+  [FAQ](#faq) for how this works and its caveats.
+- **In-app updates** — checks GitHub on launch (optional) and prompts with a
+  desktop notification when a new version is out; one click updates and
+  restarts. See [Updating](#updating).
+- **System tray** with quick profile switching and close-to-tray; runs in the
+  background on desktops without a tray.
 - **Persistent config** at `~/.config/openkraken/config.json`.
 
-## Requirements
+*Custom vendor logos:* the sensor screens show a stylised vendor wordmark by
+default. To use official logo artwork instead, drop your own RGBA PNGs at
+`~/.config/openkraken/logos/{amd,intel,nvidia}.png` — OpenKraken ships no
+trademarked logos.
 
-- Linux (developed on **Pop!_OS / COSMIC / Wayland**; works on GNOME and others).
-- **Python ≥ 3.10** (3.12 recommended).
-- **PyQt6 ≥ 6.4** — best installed from your distribution (e.g.
-  `sudo apt install python3-pyqt6` on Debian/Ubuntu/Pop!_OS). `setup.sh` will
-  fall back to installing PyQt6 from PyPI into the venv if no system package is
-  found.
-- **liquidctl ≥ 1.15** with support for your device. The Kraken 2024 Elite RGB
-  (`1e71:3012`) needs a build that knows that USB id; `setup.sh` checks and, if
-  necessary, upgrades liquidctl from upstream automatically.
-- **Pillow ≥ 9** (for LCD rendering) — installed automatically.
-- A C-less install: there are **no compiled extensions** in this project itself.
+## Get OpenKraken
 
-## Install
+### Ubuntu / Pop!_OS / Debian — APT repository (recommended)
+
+Add the repo once, then install and get updates with `apt` like any system
+package:
+
+```bash
+curl -fsSL https://davidboulay.github.io/OpenKraken/openkraken.gpg | sudo tee /usr/share/keyrings/openkraken.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/openkraken.gpg] https://davidboulay.github.io/OpenKraken ./" | sudo tee /etc/apt/sources.list.d/openkraken.list
+sudo apt update && sudo apt install openkraken
+```
+
+New versions then arrive with `sudo apt upgrade`. The repo is GPG-signed and
+served over GitHub Pages. The `.deb` installs the udev rule for you — plug the
+cooler (or re-plug it) and launch **OpenKraken** from your app list.
+
+### Or grab the `.deb` directly
+
+From the **[Releases page](https://github.com/davidboulay/OpenKraken/releases/latest)**:
+
+```bash
+gh release download --repo davidboulay/OpenKraken --pattern '*.deb'
+sudo apt install ./openkraken_*.deb
+```
+
+### From source
 
 ```sh
 git clone https://github.com/davidboulay/OpenKraken openkraken
@@ -83,28 +112,22 @@ cd openkraken
 ./setup.sh
 ```
 
-`setup.sh` is idempotent and:
+`setup.sh` is idempotent: it creates `.venv/` (with `--system-site-packages` so
+a distro PyQt6 is visible), installs the project editable, verifies the
+liquidctl driver knows your Kraken (upgrading from upstream if needed), checks
+device permissions (offering the udev rule if yours are missing — see
+[Permissions](#permissions)), and installs an `openkraken.desktop` launcher.
 
-1. Creates `.venv/` with `--system-site-packages` (so the system PyQt6 is
-   visible).
-2. Installs the project (`pip install -e .`) and its dependencies.
-3. Verifies the liquidctl driver supports your Kraken (upgrades from the
-   upstream git repo if `0x3012` is missing).
-4. Verifies PyQt6 is importable (installs it into the venv if not).
-5. Installs an `openkraken.desktop` launcher into
-   `~/.local/share/applications/` with absolute `Exec`/`Icon` paths.
+Requirements are modest: Python ≥ 3.10, PyQt6 ≥ 6.4, liquidctl ≥ 1.15,
+Pillow ≥ 9 — no compiled extensions in the project itself.
 
-## Run
+### Run
 
-From a terminal:
+Launch **OpenKraken** from your application menu, or from a terminal:
 
 ```sh
-.venv/bin/openkraken
+.venv/bin/openkraken        # source install; the .deb puts `openkraken` on PATH
 ```
-
-Or launch **OpenKraken** from your application menu.
-
-Flags:
 
 | Flag             | Effect                                  |
 | ---------------- | --------------------------------------- |
@@ -113,71 +136,46 @@ Flags:
 | `--debug`        | Verbose (DEBUG-level) logging           |
 | `--version`      | Print version and exit                  |
 
-### Autostart on login
+**Autostart on login** (for monitoring or CPU/GPU-temp curves):
 
-Because curves can run autonomously in the cooler's firmware you often don't
-need the app running, but if you want monitoring or CPU/GPU-temp curves at
-login:
+```sh
+mkdir -p ~/.config/autostart
+cp ~/.local/share/applications/openkraken.desktop ~/.config/autostart/
+# optionally start hidden in the tray:
+sed -i 's|openkraken$|openkraken --minimized|' ~/.config/autostart/openkraken.desktop
+```
 
-- **COSMIC / GNOME / most desktops:** drop a copy of the launcher into the
-  autostart directory:
+Liquid-temp curves run inside the cooler's firmware, so if that's all you use,
+the app doesn't need to be running after applying them once.
 
-  ```sh
-  mkdir -p ~/.config/autostart
-  cp ~/.local/share/applications/openkraken.desktop ~/.config/autostart/
-  # optionally start hidden in the tray:
-  sed -i 's|openkraken$|openkraken --minimized|' ~/.config/autostart/openkraken.desktop
-  ```
+## Updating
 
-## GNOME / other desktops
-
-OpenKraken works on stock GNOME, KDE, COSMIC, and others. The one thing that
-differs between desktops is the **system tray**:
-
-- **With a tray** (KDE, COSMIC's panel applet, GNOME *with* the
-  [AppIndicator/KStatusNotifierItem extension](https://extensions.gnome.org/extension/615/appindicator-support/)),
-  you get the tray icon, quick profile switching, and close-to-tray.
-- **Without a tray** (stock GNOME ships none by default), the app still keeps
-  your cooling and lighting active when you close the window:
-  - **Closing the window hides it** and leaves the control engine running in the
-    background (so CPU/GPU-temp curves and sensor LCD screens keep updating).
-    This is the **"Keep running in background when closed"** option on the
-    Settings page (enabled by default; ignored when a tray is present, where
-    *close to tray* applies instead).
-  - **Relaunch OpenKraken** — from the application menu, the launcher, or
-    `.venv/bin/openkraken` — to **reopen the window**. A second instance does not
-    start; it just raises the running one (single-instance via a per-user socket
-    at `openkraken-$UID`).
-  - **`Ctrl+Q` quits** the app entirely (stops the engine and exits). Without a
-    tray this is the discoverable way to fully quit; you can also kill the
-    process.
-
-If you only ever rely on **liquid-temp curves** (which run inside the cooler's
-firmware), you do not need the app running at all after applying them once.
-
-### Wayland note
-
-PyQt6 at this project's floor (**≥ 6.4**, the version `setup.sh`/`pip` install
-and the one shipped on the target system) bundles the Qt **Wayland** platform
-plugin, so the app runs natively on Wayland sessions. If the Wayland plugin is
-missing, Qt falls back to **XWayland**, which is harmless — the only visible
-difference is that window raising on relaunch is a *request* the compositor may
-honour or queue, per Wayland's focus-stealing policy.
+- **APT installs** update like any package: `sudo apt upgrade`.
+- **In-app**: with *Check for updates on launch* enabled (Settings, default on),
+  OpenKraken quietly checks GitHub at startup and shows a desktop notification
+  when a new version exists — **Update now** downloads and installs it (a
+  PolicyKit password prompt appears for `.deb` installs; source checkouts
+  `git pull`) and restarts the app. The same flow is available manually via
+  **Settings → Check for updates**.
 
 ## Permissions
 
-liquidctl talks to the cooler over raw USB HID (`/dev/hidraw*` / the USB device
-node). To use it **without root**, your user needs write access to the device.
-On this machine that already works. **`setup.sh` checks this for you**: it probes
-for an NZXT (`1e71`) `hidraw` node and, if one is present but not read/writable by
-your user, *offers* to install the udev rule below (it never fails setup if you
-decline, and stays silent when run non-interactively).
+liquidctl talks to the cooler over raw USB HID (`/dev/hidraw*`) **and** the raw
+USB device node (string descriptors at enumeration + the LCD's bulk interface).
+To use it **without root**, your user needs access to both. The `.deb` installs
+the udev rule automatically; `setup.sh` probes both access paths and *offers*
+the rule when either is missing.
 
-To add the rule **manually**, create `/etc/udev/rules.d/70-openkraken.rules`:
+To add it **manually**, create `/etc/udev/rules.d/70-openkraken.rules`:
 
 ```udev
-# NZXT devices (incl. Kraken 2024 Elite RGB, 1e71:3012) — accessible to plugdev
+# NZXT devices (incl. Kraken 2024 Elite RGB, 1e71:3012) — accessible to plugdev.
+# BOTH lines are required: "hidraw" covers cooling/lighting/status, and "usb"
+# covers the LCD (a separate USB bulk interface) plus device enumeration itself
+# — without it OpenKraken fails to connect with a "no langid (permission
+# issue...)" error.
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
 ```
 
 Then reload and re-plug (or reboot):
@@ -190,6 +188,23 @@ sudo usermod -aG plugdev "$USER"      # only if you rely on the plugdev fallback
 
 The `TAG+="uaccess"` line is usually enough on systemd-logind desktops; the
 `plugdev` group is a fallback for systems without logind seat management.
+
+## Desktops & tray
+
+OpenKraken works on stock GNOME, KDE, COSMIC, and others. The one thing that
+differs is the **system tray**:
+
+- **With a tray** (KDE, COSMIC's panel applet, GNOME *with* the
+  [AppIndicator/KStatusNotifierItem extension](https://extensions.gnome.org/extension/615/appindicator-support/)),
+  you get the tray icon, quick profile switching, and close-to-tray.
+- **Without a tray** (stock GNOME), closing the window hides it and leaves the
+  control engine running (*"Keep running in background when closed"*, Settings,
+  default on). **Relaunching OpenKraken reopens the window** (single-instance —
+  a second launch just raises the running one). <kbd>Ctrl</kbd>+<kbd>Q</kbd>
+  quits entirely.
+
+PyQt6 ≥ 6.4 bundles the Qt Wayland platform plugin, so the app runs natively on
+Wayland; if the plugin is missing Qt falls back to XWayland, which is harmless.
 
 ## Supported devices
 
@@ -223,24 +238,24 @@ What that means in practice:
 - **Enable it explicitly.** The Lighting page ships with "Control LEDs"
   unchecked; until you turn it on, OpenKraken never writes to the LEDs and your
   existing (NZXT/firmware) lighting is left alone.
-- **Effects are streamed from the host at ~1 frame/s.** The device's firmware
-  rejects its own hardware animation modes for this generation and reliably
-  accepts Direct frames only at about **1 FPS**, so Breathing / Color cycle /
-  Spectrum are computed by the app and pushed one slow frame at a time. They are
-  designed as gentle drifts, not fast flashes, and they **stop when the app
-  closes** (a solid colour just stays as the last frame written).
+- **Effects are streamed from the host.** The device's firmware rejects its own
+  hardware animation modes for this generation, so Breathing / Color cycle /
+  Spectrum are computed by the app and streamed as Direct frames — smoothly, at
+  **4 frames/s by default** (`lighting_fps` in the config, clamped 0.5–5; 5 FPS
+  soak-tested on real hardware). Effects **stop when the app closes** (a solid
+  colour just stays as the last frame written).
 - **Brightness is applied host-side** (the device has no brightness command),
   and **colours reset on an AC power-cycle** — reopen the app (or let it
   autostart with "apply on start") to re-apply.
 - Covers the **24-LED pump ring** and the bundled **RGB Core fan** chain; ring
   and fans can be synced or driven independently.
 
-**Why is the LCD sensor screen refresh so slow by default?**
+**Why is the LCD sensor screen refresh 2 s by default?**
 Each rendered frame is a full-resolution bitmap uploaded over USB — roughly
-**0.8 MB per frame** (640×640 RGB565, ≈819 KB). To avoid saturating the link and
-spamming the firmware, the **sensor screen defaults to a 2-second** refresh
-interval (configurable 0.5–10 s on the LCD page). Animated GIFs are limited by
-the firmware to an encoded size of about **24 MB**.
+**0.8 MB per frame**. To avoid saturating the link and spamming the firmware,
+the **sensor screen defaults to a 2-second** refresh interval (configurable
+0.5–10 s on the LCD page). Animated GIFs are limited by the firmware to an
+encoded size of about **24 MB**.
 
 **Do my fan/pump curves survive closing the app — or a reboot?**
 **Liquid-temp curves** are written into the cooler's firmware as a 40-point
@@ -260,18 +275,31 @@ Check the [permissions](#permissions) section, confirm `liquidctl list` (run via
 the venv: `.venv/bin/python -m liquidctl list`) sees the device, and make sure
 nothing else (e.g. another monitoring tool) is holding the HID handle.
 
+## Configuration & data
+
+Everything lives under `~/.config/openkraken/`:
+
+- `config.json` — all settings (cooling curves, LCD, lighting, update checks,
+  `lighting_fps`, LCD self-heal intervals)
+- `media/` — cached/resized LCD images and GIFs
+- `logos/` — optional user-supplied vendor logo PNGs for the sensor screens
+
 ## Uninstall
 
-```sh
-rm ~/.local/share/applications/openkraken.desktop
-rm ~/.config/autostart/openkraken.desktop   # if you added autostart
-rm -rf .venv                                 # the project's virtual environment
-rm -rf ~/.config/openkraken                  # config + cached LCD media (optional)
-# then delete the cloned project directory
-```
+- **APT / .deb:** `sudo apt remove openkraken` (add `--purge` to drop the udev
+  rule too).
+- **Source install:**
 
-Any udev rule that was installed (`/etc/udev/rules.d/70-openkraken.rules`) can be
-removed separately with `sudo`.
+  ```sh
+  rm ~/.local/share/applications/openkraken.desktop
+  rm ~/.config/autostart/openkraken.desktop   # if you added autostart
+  rm -rf .venv                                 # the project's virtual environment
+  rm -rf ~/.config/openkraken                  # config + cached LCD media (optional)
+  # then delete the cloned project directory
+  ```
+
+  Any udev rule that was installed (`/etc/udev/rules.d/70-openkraken.rules`) can
+  be removed separately with `sudo`.
 
 ## License
 
