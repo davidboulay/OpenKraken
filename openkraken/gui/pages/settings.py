@@ -53,16 +53,40 @@ class _UpdateWorker(QThread):
     checked = pyqtSignal(object)   # updater.UpdateStatus
     applied = pyqtSignal(bool, str)
 
-    def __init__(self, mode: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        mode: str,
+        parent: QWidget | None = None,
+        status: "updater.UpdateStatus | None" = None,
+    ) -> None:
         super().__init__(parent)
         self._mode = mode  # "check" | "apply"
+        self._status = status  # for "apply": carries the .deb asset url
 
     def run(self) -> None:  # pragma: no cover - thread body, hardware/network
         if self._mode == "check":
             self.checked.emit(updater.check_for_update())
         else:
-            ok, msg = updater.apply_update()
+            ok, msg = updater.apply_update(self._status)
             self.applied.emit(ok, msg)
+
+
+class _UpdatePromptWorker(QThread):
+    """Shows the blocking notify-send update prompt off the GUI thread.
+
+    ``notify-send -A`` waits for the user's click (or dismissal), so it must
+    not run on the GUI thread.  Emits the chosen action: "update", "open", or
+    "" when dismissed/unsupported.
+    """
+
+    action = pyqtSignal(str)
+
+    def __init__(self, status: "updater.UpdateStatus", parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._status = status
+
+    def run(self) -> None:  # pragma: no cover - thread body, desktop/network
+        self.action.emit(updater.notify_update(self._status) or "")
 
 
 class SettingsPage(QWidget):
@@ -248,18 +272,35 @@ class SettingsPage(QWidget):
 
     def _on_update_checked(self, status: object) -> None:
         st: updater.UpdateStatus = status  # type: ignore[assignment]
+        self._last_update_status = st
         self._apply_update_btn.setVisible(bool(st.update_available and st.can_apply))
-        if getattr(self, "_announce_only", False) and not st.update_available:
-            self._update_status.setText("")  # stay quiet on a silent launch check
+        if getattr(self, "_announce_only", False):
+            if not st.update_available:
+                self._update_status.setText("")  # stay quiet on a silent launch check
+                return
+            # Launch check found an update: prompt with a desktop notification
+            # ("Update now" / "Release notes"), Clippy-style, since the window
+            # usually starts hidden and a Settings label would go unseen.
+            self._update_status.setText(st.message)
+            prompt = _UpdatePromptWorker(st, self)
+            prompt.action.connect(self._on_update_prompt_action)
+            self._update_prompt_worker = prompt
+            prompt.start()
             return
         self._update_status.setText(st.message)
+
+    def _on_update_prompt_action(self, action: str) -> None:
+        if action == "update":
+            self._apply_update()
 
     def _apply_update(self) -> None:
         if self._update_worker is not None and self._update_worker.isRunning():
             return
         self._apply_update_btn.setEnabled(False)
         self._update_status.setText("Updating…")
-        worker = _UpdateWorker("apply", self)
+        worker = _UpdateWorker(
+            "apply", self, status=getattr(self, "_last_update_status", None)
+        )
         worker.applied.connect(self._on_update_applied)
         self._update_worker = worker
         worker.start()
