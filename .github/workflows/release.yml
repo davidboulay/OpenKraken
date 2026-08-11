@@ -36,3 +36,16 @@ jobs:
           name: OpenKraken ${{ github.ref_name }}
           generate_release_notes: true
           files: ${{ steps.deb.outputs.path }}
+
+  # Rebuild the APT index so `apt upgrade` sees this version. Called directly
+  # rather than left to apt-repo.yml's `on: release` trigger: the release above
+  # is published with ${{ github.token }}, and GitHub raises no
+  # workflow-triggering events for GITHUB_TOKEN actions, so that trigger would
+  # silently never fire for tag-driven releases (a lesson learned in Clippy —
+  # four versions shipped there without the index being rebuilt).
+  apt:
+    needs: build-deb
+    permissions:
+      contents: write
+    secrets: inherit          # apt-repo needs APT_GPG_PRIVATE_KEY to sign
+    uses: ./.github/workflows/apt-repo.yml

@@ -96,4 +96,41 @@ else
     info "gh not found — tag pushed; the GitHub Actions workflow will build the release."
 fi
 
+# --- 6. APT repository (GitHub Pages) -----------------------------------------
+# Rebuild the flat, GPG-signed APT repo from ALL release .debs and force-push it
+# to gh-pages. The signing key lives ONLY on this machine
+# (~/.config/openkraken-apt/gnupg; backup in ~/.local/bin/.openkraken-bak/
+# apt-signing/) — CI's apt-repo.yml is an optional mirror that stays dormant
+# unless an APT_GPG_PRIVATE_KEY repo secret is configured.
+APT_GNUPGHOME="$HOME/.config/openkraken-apt/gnupg"
+if [ -d "$APT_GNUPGHOME" ] && command -v gh >/dev/null 2>&1 \
+        && command -v dpkg-scanpackages >/dev/null 2>&1 \
+        && command -v apt-ftparchive >/dev/null 2>&1; then
+    info "publishing the APT repository to gh-pages"
+    APT_TMP="$(mktemp -d)"
+    trap 'rm -rf "$APT_TMP"' EXIT
+    mkdir -p "$APT_TMP/debs"
+    for tag in $(gh release list --limit 100 --json tagName -q '.[].tagName'); do
+        gh release download "$tag" --pattern '*.deb' --dir "$APT_TMP/debs" \
+            --skip-existing 2>/dev/null || true
+    done
+    GNUPGHOME="$APT_GNUPGHOME" \
+        PAGES_URL="https://davidboulay.github.io/OpenKraken" \
+        "$SCRIPT_DIR/apt/build-repo.sh" "$APT_TMP/debs" "$APT_TMP/public"
+    touch "$APT_TMP/public/.nojekyll"
+    (
+        cd "$APT_TMP/public"
+        git init -q
+        git checkout -q -b gh-pages
+        git add -A
+        git -c user.name="davidboulay" \
+            -c user.email="89959743+davidboulay@users.noreply.github.com" \
+            commit -qm "APT repo: v$NEW ($(date -u +%FT%TZ))"
+        git push -f "https://github.com/davidboulay/OpenKraken" gh-pages
+    )
+    info "APT repository published (davidboulay.github.io/OpenKraken)"
+else
+    info "APT publish skipped (signing keyring or dpkg-dev/apt-utils/gh missing)."
+fi
+
 info "Done: v$NEW released."

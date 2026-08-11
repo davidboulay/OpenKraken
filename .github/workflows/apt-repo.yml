@@ -1,0 +1,92 @@
+name: APT repository
+
+# Publish/refresh the GitHub-Pages-hosted APT repository
+# (davidboulay.github.io/OpenKraken) so `sudo apt upgrade` picks up new
+# versions. The repo is rebuilt from *all* release .debs each time, so it stays
+# cumulative and re-runs are idempotent — which is what makes the three entry
+# points below safe.
+#
+# `workflow_call` is the important one (lesson learned in Clippy): release.yml
+# publishes releases with ${{ github.token }}, and GitHub deliberately raises
+# no workflow-triggering events for anything a GITHUB_TOKEN did — so an
+# `on: release` trigger silently never fires for tag-driven releases. Being
+# *called* by release.yml doesn't depend on event delivery at all.
+#
+# `release: published` is kept for releases created outside Actions (e.g.
+# packaging/release.sh running `gh release create` with the user's own token —
+# those DO emit events). `workflow_dispatch` stays for manual backfills.
+# Double-runs are prevented by the concurrency group and harmless regardless.
+on:
+  workflow_call:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apt-repo
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tooling
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev apt-utils gnupg
+
+      - name: Import signing key
+        id: key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: |
+          # The signing key normally lives ONLY on the maintainer's machine
+          # (packaging/release.sh signs and publishes the repo locally). This
+          # CI path is an optional mirror: it activates automatically if the
+          # APT_GPG_PRIVATE_KEY secret is configured, and skips cleanly (green)
+          # when it isn't.
+          if [ -z "$APT_GPG_PRIVATE_KEY" ]; then
+            echo "have_key=false" >> "$GITHUB_OUTPUT"
+            echo "APT_GPG_PRIVATE_KEY secret not set — skipping (release.sh publishes the repo locally)."
+            exit 0
+          fi
+          echo "have_key=true" >> "$GITHUB_OUTPUT"
+          export GNUPGHOME="$(mktemp -d)"; chmod 700 "$GNUPGHOME"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          printf '%s' "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Collect every release .deb
+        if: steps.key.outputs.have_key == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p debs
+          for tag in $(gh release list --limit 100 --json tagName -q '.[].tagName'); do
+            gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+              --pattern '*.deb' --dir debs --skip-existing || true
+          done
+          ls -1 debs
+
+      - name: Build the signed flat repo
+        if: steps.key.outputs.have_key == 'true'
+        run: |
+          PAGES_URL="https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}" \
+            ./packaging/apt/build-repo.sh debs public
+          touch public/.nojekyll
+
+      - name: Publish to gh-pages
+        if: steps.key.outputs.have_key == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd public
+          git init -q
+          git checkout -q -b gh-pages
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -qm "APT repo: ${GITHUB_REF_NAME:-manual} ($(date -u +%FT%TZ))"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}" gh-pages
