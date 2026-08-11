@@ -32,7 +32,13 @@ GIT_LIQUIDCTL="git+https://github.com/liquidctl/liquidctl"
 # NZXT vendor id and where the device-access udev rule is installed.
 NZXT_VENDOR_ID="1e71"
 UDEV_RULE_PATH="/etc/udev/rules.d/70-openkraken.rules"
-UDEV_RULE_BODY='SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"'
+# TWO rules are required: hidraw covers status/cooling/lighting (HID reports),
+# and the raw-usb rule covers the LCD, which liquidctl drives over a separate
+# USB *bulk* interface via pyusb — without it enumeration itself crashes with
+# "The device has no langid (permission issue...)" (issue #4).
+UDEV_RULE_BODY='# OpenKraken — non-root access to NZXT coolers (HID + USB bulk for the LCD).
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"'
 
 # --- pretty progress --------------------------------------------------------
 step() { printf '\n\033[1;35m==>\033[0m \033[1m%s\033[0m\n' "$*"; }
@@ -120,12 +126,17 @@ step "Checking Kraken device access (/dev/hidraw* permissions)"
 #   2 = no NZXT hidraw node is present at all (device unplugged / different host)
 #   1 = an NZXT hidraw is present but NOT accessible (need the udev rule)
 device_access_probe() {
+    # Checks BOTH access paths liquidctl needs: the hidraw node (status /
+    # cooling / lighting) AND the raw usbfs node (LCD bulk uploads + string
+    # descriptors during enumeration — inaccessible => "no langid" crash).
     "$PY" - "$NZXT_VENDOR_ID" <<'PY'
 import glob, os, sys
 
 vendor = sys.argv[1].upper()
-found_device = False
-accessible = False
+
+# --- hidraw side ---
+hid_found = False
+hid_ok = False
 for uevent in glob.glob("/sys/class/hidraw/*/device/uevent"):
     try:
         with open(uevent, "r", encoding="utf-8", errors="replace") as fh:
@@ -140,13 +151,38 @@ for uevent in glob.glob("/sys/class/hidraw/*/device/uevent"):
             break
     if not hid_id or vendor not in hid_id:
         continue
-    found_device = True
+    hid_found = True
     # /sys/class/hidraw/hidrawN/device/uevent -> /dev/hidrawN
     name = uevent.split("/")[4]            # "hidrawN"
-    dev_node = "/dev/" + name
-    if os.access(dev_node, os.R_OK | os.W_OK):
-        accessible = True
+    if os.access("/dev/" + name, os.R_OK | os.W_OK):
+        hid_ok = True
         break
+
+# --- raw usb (usbfs) side ---
+usb_found = False
+usb_ok = False
+for vid_file in glob.glob("/sys/bus/usb/devices/*/idVendor"):
+    try:
+        with open(vid_file, "r", encoding="ascii") as fh:
+            if fh.read().strip().upper() != vendor:
+                continue
+    except OSError:
+        continue
+    usb_found = True
+    d = os.path.dirname(vid_file)
+    try:
+        with open(os.path.join(d, "busnum")) as fh:
+            bus = int(fh.read())
+        with open(os.path.join(d, "devnum")) as fh:
+            dev = int(fh.read())
+    except (OSError, ValueError):
+        continue
+    if os.access("/dev/bus/usb/%03d/%03d" % (bus, dev), os.R_OK | os.W_OK):
+        usb_ok = True
+        break
+
+found_device = hid_found or usb_found
+accessible = hid_ok and (usb_ok or not usb_found)
 
 if accessible:
     sys.exit(0)
@@ -165,7 +201,9 @@ install_udev_rule() {
 print_manual_udev() {
     info "To grant non-root access to the Kraken, create $UDEV_RULE_PATH containing:"
     info ""
-    info "    $UDEV_RULE_BODY"
+    while IFS= read -r _rule_line; do
+        info "    $_rule_line"
+    done <<<"$UDEV_RULE_BODY"
     info ""
     info "then run:"
     info "    sudo udevadm control --reload-rules && sudo udevadm trigger"
@@ -178,7 +216,7 @@ probe_rc=$?
 set -e
 
 if [[ "$probe_rc" -eq 0 ]]; then
-    ok "device access OK (an NZXT hidraw is read/writable by $USER)"
+    ok "device access OK (NZXT hidraw + usb device nodes read/writable by $USER)"
 elif [[ ! -t 0 ]]; then
     # Non-interactive (piped, CI, etc.): never prompt, never fail — just note it.
     if [[ "$probe_rc" -eq 2 ]]; then

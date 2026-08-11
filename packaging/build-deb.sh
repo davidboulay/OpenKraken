@@ -191,9 +191,13 @@ chmod 644 "$PKGROOT/usr/share/icons/hicolor/scalable/apps/openkraken.svg"
 
 # --- udev rule --------------------------------------------------------------
 cat >"$PKGROOT/usr/lib/udev/rules.d/70-openkraken.rules" <<'UDEV'
-# OpenKraken — non-root access to NZXT devices over raw USB HID.
+# OpenKraken — non-root access to NZXT devices.
 # Covers the Kraken 2024 Elite RGB (1e71:3012) and all other NZXT (1e71) gear.
+# BOTH lines are required: "hidraw" covers cooling/lighting/status, and "usb"
+# covers the LCD (a separate USB bulk interface) plus device enumeration itself
+# (string-descriptor reads fail without it: "no langid (permission issue...)").
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
 UDEV
 chmod 644 "$PKGROOT/usr/lib/udev/rules.d/70-openkraken.rules"
 
