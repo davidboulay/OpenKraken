@@ -185,6 +185,8 @@ _ACCESSORY_LED_COUNTS: dict[int, int] = {
     0x1B: 24,  # RGB Core radiator-kit aggregate (HW-CONFIRMED 2026-06-02: our unit
     #            reports a single 0x1B on the fan channel; 24-LED frames light the
     #            entire chain — see PROTOCOL.md §11)
+    0x1C: 16,  # F280 RGB Core (radiator-kit aggregate, 2x 8-LED fans) —
+    #            HW-CONFIRMED by a Kraken 2024 Elite 280 RGB owner (issue #5)
     0x1D: 24,  # F360 RGB Core (radiator-kit aggregate)
 }
 _FALLBACK_ACCESSORY_LEDS = 8
