@@ -1,0 +1,260 @@
+Package: openkraken
+Version: 0.1.0
+Architecture: amd64
+Maintainer: OpenKraken contributors <noreply@github.com>
+Installed-Size: 24472
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Filename: ./openkraken_0.1.0_amd64.deb
+Size: 6751210
+MD5sum: 92724c7a5085a1bc2f90e20f80736e32
+SHA1: 56728c82e68b08c0c6a7e52b6a53f4e9bc772106
+SHA256: 4dec72ec30c3529b9e5b925b4598151244d85d6e2932f0ffffe42a9ffae3460e
+Section: utils
+Priority: optional
+Homepage: https://github.com/davidboulay/OpenKraken
+Description: A native Linux desktop app for NZXT Kraken liquid coolers — monitor, tune curves, and drive the LCD without rebooting into Windows.
+ A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl).
+ .
+ OpenKraken is a native PyQt6 desktop app. It monitors CPU/GPU/liquid
+ temperatures and pump/fan RPM, edits pump and fan curves (which run in the
+ cooler's own firmware for liquid-temp curves), drives the round 640x640 LCD
+ with live sensor screens, images and GIFs, and controls the RGB lighting.
+ .
+ A recent build of liquidctl (>= 1.15, with Kraken 2024 support) is bundled,
+ so the package works even on distributions whose liquidctl is too old.
+ PyQt6 and Pillow are taken from the distribution.
+
+Package: openkraken
+Version: 0.2.0
+Architecture: amd64
+Maintainer: OpenKraken contributors <noreply@github.com>
+Installed-Size: 24520
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Filename: ./openkraken_0.2.0_amd64.deb
+Size: 6762810
+MD5sum: 9e69baf20cc999c7a5845e1a27f20d9e
+SHA1: 7e771faba94d8fa30094bfc44b8d74901f4cf26c
+SHA256: ed470a0c6e45580932e1f32b2b30b58bce05d883993cf12476315ef1f26e8dd0
+Section: utils
+Priority: optional
+Homepage: https://github.com/davidboulay/OpenKraken
+Description: A native Linux desktop app for NZXT Kraken liquid coolers — monitor, tune curves, and drive the LCD without rebooting into Windows.
+ A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl).
+ .
+ OpenKraken is a native PyQt6 desktop app. It monitors CPU/GPU/liquid
+ temperatures and pump/fan RPM, edits pump and fan curves (which run in the
+ cooler's own firmware for liquid-temp curves), drives the round 640x640 LCD
+ with live sensor screens, images and GIFs, and controls the RGB lighting.
+ .
+ A recent build of liquidctl (>= 1.15, with Kraken 2024 support) is bundled,
+ so the package works even on distributions whose liquidctl is too old.
+ PyQt6 and Pillow are taken from the distribution.
+
+Package: openkraken
+Version: 0.2.1
+Architecture: amd64
+Maintainer: OpenKraken contributors <noreply@github.com>
+Installed-Size: 24540
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Filename: ./openkraken_0.2.1_amd64.deb
+Size: 6770506
+MD5sum: 991b10a789334d00f4a07423a1421a48
+SHA1: ef7193b5a2b967407372bac1ec356e404a0f3642
+SHA256: 834cfa08e8fa6fb1e6140331a5f84c42541b9c0a02a482604096d57324b60a97
+Section: utils
+Priority: optional
+Homepage: https://github.com/davidboulay/OpenKraken
+Description: A native Linux desktop app for NZXT Kraken liquid coolers — monitor, tune curves, and drive the LCD without rebooting into Windows.
+ A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl).
+ .
+ OpenKraken is a native PyQt6 desktop app. It monitors CPU/GPU/liquid
+ temperatures and pump/fan RPM, edits pump and fan curves (which run in the
+ cooler's own firmware for liquid-temp curves), drives the round 640x640 LCD
+ with live sensor screens, images and GIFs, and controls the RGB lighting.
+ .
+ A recent build of liquidctl (>= 1.15, with Kraken 2024 support) is bundled,
+ so the package works even on distributions whose liquidctl is too old.
+ PyQt6 and Pillow are taken from the distribution.
+
+Package: openkraken
+Version: 0.2.2
+Architecture: amd64
+Maintainer: OpenKraken contributors <noreply@github.com>
+Installed-Size: 24580
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Filename: ./openkraken_0.2.2_amd64.deb
+Size: 6779702
+MD5sum: 3d32e2b76db10d43139fb0d25a29d754
+SHA1: 09503e37c085ada64840d56aa738bb5fa9d9df28
+SHA256: 6c0c80899d9a8e5b28134c2841666592d3eeab5d4b8f1252bac14ff23647aae4
+Section: utils
+Priority: optional
+Homepage: https://github.com/davidboulay/OpenKraken
+Description: A native Linux desktop app for NZXT Kraken liquid coolers — monitor, tune curves, and drive the LCD without rebooting into Windows.
+ A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl).
+ .
+ OpenKraken is a native PyQt6 desktop app. It monitors CPU/GPU/liquid
+ temperatures and pump/fan RPM, edits pump and fan curves (which run in the
+ cooler's own firmware for liquid-temp curves), drives the round 640x640 LCD
+ with live sensor screens, images and GIFs, and controls the RGB lighting.
+ .
+ A recent build of liquidctl (>= 1.15, with Kraken 2024 support) is bundled,
+ so the package works even on distributions whose liquidctl is too old.
+ PyQt6 and Pillow are taken from the distribution.
+
+Package: openkraken
+Version: 0.2.3
+Architecture: amd64
+Maintainer: OpenKraken contributors <noreply@github.com>
+Installed-Size: 24584
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Filename: ./openkraken_0.2.3_amd64.deb
+Size: 6781140
+MD5sum: cada8bf1b6c37a65eb01eccc673d0c9f
+SHA1: 43aade1935bcc10ebb5444f53819ae90244a4be3
+SHA256: 11338d148cb6316920e96e3a39b37090d33472a4c471fdacc16bb63b3d95048e
+Section: utils
+Priority: optional
+Homepage: https://github.com/davidboulay/OpenKraken
+Description: A native Linux desktop app for NZXT Kraken liquid coolers — monitor, tune curves, and drive the LCD without rebooting into Windows.
+ A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl).
+ .
+ OpenKraken is a native PyQt6 desktop app. It monitors CPU/GPU/liquid
+ temperatures and pump/fan RPM, edits pump and fan curves (which run in the
+ cooler's own firmware for liquid-temp curves), drives the round 640x640 LCD
+ with live sensor screens, images and GIFs, and controls the RGB lighting.
+ .
+ A recent build of liquidctl (>= 1.15, with Kraken 2024 support) is bundled,
+ so the package works even on distributions whose liquidctl is too old.
+ PyQt6 and Pillow are taken from the distribution.
+
+Package: openkraken
+Version: 0.2.4
+Architecture: amd64
+Maintainer: OpenKraken contributors <noreply@github.com>
+Installed-Size: 24584
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Filename: ./openkraken_0.2.4_amd64.deb
+Size: 6781436
+MD5sum: 2773f3546707a79d64463226d18cd2b1
+SHA1: 1177c64361939ff12e4e77a003fde10627ab3281
+SHA256: 8f1c01767c137feb297fa042cf73761e0e083caa7ce3ec27aad90b1d95a8a1f1
+Section: utils
+Priority: optional
+Homepage: https://github.com/davidboulay/OpenKraken
+Description: A native Linux desktop app for NZXT Kraken liquid coolers — monitor, tune curves, and drive the LCD without rebooting into Windows.
+ A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl).
+ .
+ OpenKraken is a native PyQt6 desktop app. It monitors CPU/GPU/liquid
+ temperatures and pump/fan RPM, edits pump and fan curves (which run in the
+ cooler's own firmware for liquid-temp curves), drives the round 640x640 LCD
+ with live sensor screens, images and GIFs, and controls the RGB lighting.
+ .
+ A recent build of liquidctl (>= 1.15, with Kraken 2024 support) is bundled,
+ so the package works even on distributions whose liquidctl is too old.
+ PyQt6 and Pillow are taken from the distribution.
+
+Package: openkraken
+Version: 0.2.5
+Architecture: amd64
+Maintainer: OpenKraken contributors <noreply@github.com>
+Installed-Size: 24584
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Filename: ./openkraken_0.2.5_amd64.deb
+Size: 6781774
+MD5sum: 745efa032255d08188dbcf95b4348424
+SHA1: 906b38a9dab281c975f0d01952ecf30ffc7a277a
+SHA256: 8bb93921fffeeda729903d502038b93534c6268a0f0cc5fe5f1f08f1079081e3
+Section: utils
+Priority: optional
+Homepage: https://github.com/davidboulay/OpenKraken
+Description: A native Linux desktop app for NZXT Kraken liquid coolers — monitor, tune curves, and drive the LCD without rebooting into Windows.
+ A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl).
+ .
+ OpenKraken is a native PyQt6 desktop app. It monitors CPU/GPU/liquid
+ temperatures and pump/fan RPM, edits pump and fan curves (which run in the
+ cooler's own firmware for liquid-temp curves), drives the round 640x640 LCD
+ with live sensor screens, images and GIFs, and controls the RGB lighting.
+ .
+ A recent build of liquidctl (>= 1.15, with Kraken 2024 support) is bundled,
+ so the package works even on distributions whose liquidctl is too old.
+ PyQt6 and Pillow are taken from the distribution.
+
+Package: openkraken
+Version: 0.2.6
+Architecture: amd64
+Maintainer: OpenKraken contributors <noreply@github.com>
+Installed-Size: 24588
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Filename: ./openkraken_0.2.6_amd64.deb
+Size: 6782446
+MD5sum: d7034ca1cbca914347ab6a5f5cbe0f93
+SHA1: 1aeb1f30cc88f1381890954f3f33fa60a9cf0eba
+SHA256: 743768798d1203058833a27b0a699cad2e98db8a12b99d6922bad92987aac84b
+Section: utils
+Priority: optional
+Homepage: https://github.com/davidboulay/OpenKraken
+Description: A native Linux desktop app for NZXT Kraken liquid coolers — monitor, tune curves, and drive the LCD without rebooting into Windows.
+ A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl).
+ .
+ OpenKraken is a native PyQt6 desktop app. It monitors CPU/GPU/liquid
+ temperatures and pump/fan RPM, edits pump and fan curves (which run in the
+ cooler's own firmware for liquid-temp curves), drives the round 640x640 LCD
+ with live sensor screens, images and GIFs, and controls the RGB lighting.
+ .
+ A recent build of liquidctl (>= 1.15, with Kraken 2024 support) is bundled,
+ so the package works even on distributions whose liquidctl is too old.
+ PyQt6 and Pillow are taken from the distribution.
+
+Package: openkraken
+Version: 0.2.7
+Architecture: amd64
+Maintainer: OpenKraken contributors <noreply@github.com>
+Installed-Size: 24592
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Filename: ./openkraken_0.2.7_amd64.deb
+Size: 6783948
+MD5sum: 79740c326990af7e964f2d4606fe82c0
+SHA1: 6b7fc266af0a593d6a083c359116574f5a1f79f1
+SHA256: fa9fe32ba14f414bfdacba2c166552997ae17a962adc7c85ba242993949d189e
+Section: utils
+Priority: optional
+Homepage: https://github.com/davidboulay/OpenKraken
+Description: A native Linux desktop app for NZXT Kraken liquid coolers — monitor, tune curves, and drive the LCD without rebooting into Windows.
+ A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl).
+ .
+ OpenKraken is a native PyQt6 desktop app. It monitors CPU/GPU/liquid
+ temperatures and pump/fan RPM, edits pump and fan curves (which run in the
+ cooler's own firmware for liquid-temp curves), drives the round 640x640 LCD
+ with live sensor screens, images and GIFs, and controls the RGB lighting.
+ .
+ A recent build of liquidctl (>= 1.15, with Kraken 2024 support) is bundled,
+ so the package works even on distributions whose liquidctl is too old.
+ PyQt6 and Pillow are taken from the distribution.
+
+Package: openkraken
+Version: 0.3.0
+Architecture: amd64
+Maintainer: OpenKraken contributors <noreply@github.com>
+Installed-Size: 24708
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Filename: ./openkraken_0.3.0_amd64.deb
+Size: 6816718
+MD5sum: 2701d996eab97eb49be76392fb744112
+SHA1: b5aff8ba2a70526ce7830249f2732fb135a96d54
+SHA256: e04552592f86459ca46696eb2edccc2e49d3a7de21bef9a6a290757a47b85bf5
+Section: utils
+Priority: optional
+Homepage: https://github.com/davidboulay/OpenKraken
+Description: Does it control the RGB lighting?
+ A Linux clone of NZXT CAM for the NZXT Kraken 2024 Elite RGB (PyQt6 + liquidctl).
+ .
+ OpenKraken is a native PyQt6 desktop app. It monitors CPU/GPU/liquid
+ temperatures and pump/fan RPM, edits pump and fan curves (which run in the
+ cooler's own firmware for liquid-temp curves), drives the round 640x640 LCD
+ with live sensor screens, images and GIFs, and controls the RGB lighting.
+ .
+ A recent build of liquidctl (>= 1.15, with Kraken 2024 support) is bundled,
+ so the package works even on distributions whose liquidctl is too old.
+ PyQt6 and Pillow are taken from the distribution.
+

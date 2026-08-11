@@ -1,0 +1,23 @@
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Tue, 11 Aug 2026 20:19:19 +0000
+Label: OpenKraken
+Origin: OpenKraken
+Suite: stable
+MD5Sum:
+ b238154dda5c2cd1dc34802a08ce11e4            12140 Packages
+ 39422b773f675437091879f4eb227edd             1867 Packages.gz
+ 7b8711fd07b2307a309c516312b2eae3              144 Release
+SHA1:
+ 0861541da5bd13abf36e95db222fcdc6889eb6bb            12140 Packages
+ 699fde39c0e9066cf1a26110e9e22ddfdd2c3727             1867 Packages.gz
+ 451f90898cc319596f4c7f32e8761c755d2ee601              144 Release
+SHA256:
+ 96d506556f5a0528d788bfaff582b9180e3222731e03b0bfdf9188547ec0affc            12140 Packages
+ 8b50019e95611a3b41166d480d9275ecaec1b1ea572416b7311f5024061f7632             1867 Packages.gz
+ 9ab90d75769cf1346791e24b3148d44b6812bafdf363957ebddb14777e706add              144 Release
+SHA512:
+ 171d8d258d63cced60a3d77dd88eb770c9a69cd70949ac7952f5cc4f0c1f95eb868a3036bb02202d348a000a42b35650fe2db731e347d0cd186ee0197a900ea1            12140 Packages
+ 12249bfc18ba38c25d37c2f635a79a392f88c58de5d64c4b83c8f1dc2227f9128d4f75fafa076f9fe7fd4bef0be1acc7bdb4e36940f7aa79b5abd3a245e0642f             1867 Packages.gz
+ ab83b98e2caa9ea46d8ff1929fa27d5df5f3aba8a52476f8b738dcef09f23d7a7b77d946a276a97b6254238984e3cc40d5b837a57d85ebe56fe580da00a3ce84              144 Release

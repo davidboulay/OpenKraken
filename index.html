@@ -1,0 +1,9 @@
+<!doctype html><meta charset="utf-8"><title>OpenKraken APT repository</title>
+<body style="font-family:system-ui;max-width:44rem;margin:3rem auto;padding:0 1rem;line-height:1.5">
+<h1>OpenKraken — APT repository</h1>
+<p>Control center for NZXT Kraken AIO liquid coolers on Linux. Install and stay updated via apt:</p>
+<pre style="background:#f4f4f4;padding:1rem;overflow:auto">curl -fsSL https://davidboulay.github.io/OpenKraken/openkraken.gpg | sudo tee /usr/share/keyrings/openkraken.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/openkraken.gpg] https://davidboulay.github.io/OpenKraken ./" | sudo tee /etc/apt/sources.list.d/openkraken.list
+sudo apt update &amp;&amp; sudo apt install openkraken</pre>
+<p>Source &amp; releases: <a href="https://github.com/davidboulay/OpenKraken">github.com/davidboulay/OpenKraken</a></p>
+</body>
