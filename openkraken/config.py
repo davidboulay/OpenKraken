@@ -324,6 +324,14 @@ class AppConfig:
     lcd_selfheal_interval_s: float = 0.0  # steady backstop; 0 = off (default)
     lcd_selfheal_boot_interval_s: float = 0.0  # boot-phase backstop; 0 = off (default)
     lcd_selfheal_boot_phase_s: float = 300.0  # how long the boot cadence lasts (if enabled)
+    #: Animated-lighting frame rate (frames/sec per channel).  PROTOCOL.md §5
+    #: relayed OpenRGB's claim that the device only accepts ~1 FPS, but a live
+    #: soak on our 2024 Elite RGB (450 writes @ 5 FPS, ring+fans, zero failures,
+    #: status polls unaffected) disproved that for OpenKraken's write path — so
+    #: breathing/cycle animate smoothly instead of stepping once per second.
+    #: Clamped to 0.5..5.0 by the engine (5 = the soak-tested ceiling); set 1.0
+    #: to restore the old conservative cadence if animations ever misbehave.
+    lighting_fps: float = 4.0
     #: Quietly check GitHub for a newer version on launch (only surfaces a notice
     #: in Settings when an update is actually available).
     check_updates_on_start: bool = True
@@ -436,6 +444,7 @@ class AppConfig:
             "lcd_selfheal_interval_s": float(self.lcd_selfheal_interval_s),
             "lcd_selfheal_boot_interval_s": float(self.lcd_selfheal_boot_interval_s),
             "lcd_selfheal_boot_phase_s": float(self.lcd_selfheal_boot_phase_s),
+            "lighting_fps": float(self.lighting_fps),
             "check_updates_on_start": bool(self.check_updates_on_start),
             "pump": self.pump.to_dict(),
             "fan": self.fan.to_dict(),
@@ -500,6 +509,7 @@ class AppConfig:
             lcd_selfheal_boot_phase_s=_as_float(
                 d.get("lcd_selfheal_boot_phase_s"), defaults.lcd_selfheal_boot_phase_s
             ),
+            lighting_fps=_as_float(d.get("lighting_fps"), defaults.lighting_fps),
             check_updates_on_start=_as_bool(
                 d.get("check_updates_on_start"), defaults.check_updates_on_start
             ),

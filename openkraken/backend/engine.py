@@ -67,10 +67,18 @@ _CHANNELS: tuple[str, ...] = ("pump", "fan")
 # RGB lighting channels managed by the engine (names match config / device masks).
 _LIGHTING_CHANNELS: tuple[str, ...] = ("ring", "fans")
 
-# Minimum interval between successive lighting frame writes for an animated mode,
-# in seconds.  The device only reliably accepts ~1 update/sec (PROTOCOL.md §5), so
-# we never stream faster than this regardless of poll_interval.
+# Fallback minimum interval between successive lighting frame writes for an
+# animated mode, in seconds, when ``lighting_fps`` is unset/invalid.  PROTOCOL.md
+# §5 relayed OpenRGB's ~1 FPS claim, but a live soak (5 FPS, ring+fans, 450
+# writes, zero failures) showed the device accepts faster streaming from our
+# write path — the actual cadence comes from ``config.lighting_fps`` via
+# :meth:`ControlEngine._lighting_write_interval` (clamped to 0.5..5 FPS).
 _LIGHTING_MIN_WRITE_INTERVAL: float = 1.0
+
+# lighting_fps clamp bounds: 5 FPS is the soak-tested ceiling; 0.5 FPS is a
+# floor so a bogus config value can't freeze animations near-solid.
+_LIGHTING_FPS_MIN: float = 0.5
+_LIGHTING_FPS_MAX: float = 5.0
 
 # Fallback per-channel LED counts used until ``device.lighting_info`` is populated
 # (PROTOCOL.md §2 / INTERFACES-LIGHTING.md): the 2024 Elite ring is 24 LEDs and a
@@ -852,11 +860,24 @@ class ControlEngine(QThread):
         for channel, state in self._lighting.items():
             if not state.animated:
                 continue
-            if now - state.last_write < _LIGHTING_MIN_WRITE_INTERVAL:
+            if now - state.last_write < self._lighting_write_interval():
                 continue
             # _write_lighting_frame advances state.last_write on success, so a
             # failed write does not consume the slot and the next tick can retry.
             self._write_lighting_frame(channel, state, now)
+
+    def _lighting_write_interval(self) -> float:
+        """Seconds between animated lighting frames, from ``config.lighting_fps``.
+
+        Clamped to :data:`_LIGHTING_FPS_MIN`..:data:`_LIGHTING_FPS_MAX`; falls
+        back to :data:`_LIGHTING_MIN_WRITE_INTERVAL` when unset/invalid.  Higher
+        FPS is what makes breathing/cycle continuous instead of stepping once a
+        second (5 FPS soak-tested on the 2024 Elite RGB with zero failures).
+        """
+        fps = float(getattr(self._config, "lighting_fps", 0.0) or 0.0)
+        if fps <= 0.0:
+            return _LIGHTING_MIN_WRITE_INTERVAL
+        return 1.0 / max(_LIGHTING_FPS_MIN, min(_LIGHTING_FPS_MAX, fps))
 
     def _repaint_lighting(self) -> None:
         """Re-send the current frame for every channel after an LCD write.
