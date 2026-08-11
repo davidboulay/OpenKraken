@@ -321,6 +321,9 @@ class ControlEngine(QThread):
         # streaming sensors right now (fresh/disconnected/other mode).
         self._lcd_stream_started_at: float | None = None
         self._last_lcd_reassert: float = 0.0
+        # One-shot flag so "LCD unavailable (bulk)" is surfaced once per episode
+        # instead of every 2 s tick (see _tick_lcd_sensors / issue #1).
+        self._lcd_bulk_notified: bool = False
         # Re-assert window (monotonic deadline): after an LCD content change the
         # firmware can repaint the LED ring to its default, so for a few seconds
         # we re-stream the app's lighting each tick to keep the user's settings.
@@ -769,6 +772,25 @@ class ControlEngine(QThread):
             return
         if self._lcd_cfg.mode != "sensors":
             return
+        # LCD bulk interface latched off (EBUSY/EACCES, e.g. the "(broken)" 2023
+        # Elite 0x300C): sensor frames cannot reach the panel, but the device is
+        # otherwise fine.  Surface it once and stop rendering/pushing -- do NOT
+        # disconnect (that caused an infinite reconnect storm, issue #1).
+        if getattr(self._device, "lcd_bulk_unavailable", False):
+            if not self._lcd_bulk_notified:
+                self._lcd_bulk_notified = True
+                _LOGGER.warning(
+                    "LCD image uploads unavailable (USB bulk interface busy or "
+                    "inaccessible); sensor screen disabled, cooling/lighting "
+                    "unaffected. The firmware screen keeps running."
+                )
+                self.error.emit(
+                    "LCD unavailable: the cooler's USB bulk interface is busy or "
+                    "inaccessible, so image/sensor screens can't be uploaded. "
+                    "Cooling and lighting still work."
+                )
+            return
+        self._lcd_bulk_notified = False
         now = time.monotonic()
         if now - self._last_lcd_push < self._lcd_cfg.sensor_interval:
             return

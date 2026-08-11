@@ -23,12 +23,20 @@ Design notes
 
 from __future__ import annotations
 
+import errno
 import logging
 import math
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any
+
+try:  # pyusb is a liquidctl dependency; guarded so importing this module can't fail
+    from usb.core import USBError as _USBError
+
+    _USB_ERRORS: tuple[type[BaseException], ...] = (_USBError,)
+except Exception:  # pragma: no cover - pyusb absent (hidapi-only environment)
+    _USB_ERRORS = ()
 
 logger = logging.getLogger(__name__)
 
@@ -306,6 +314,12 @@ class KrakenDevice:
         #: reconnect once the firmware's LCD memory is wedged (see
         #: :data:`_LCD_FAIL_RECONNECT_THRESHOLD` / :meth:`_note_lcd_frame_stuck`).
         self._lcd_consec_fail: int = 0
+        #: Latched when the USB *bulk* interface (image/GIF/sensor-frame uploads)
+        #: fails with EBUSY/EACCES.  The HID side keeps working, so we stay
+        #: connected and simply stop attempting bulk uploads until a manual
+        #: static/GIF apply succeeds or the device reconnects (issue #1: the
+        #: "(broken)" 2023 Elite 0x300C never frees its bulk interface).
+        self._lcd_bulk_unavailable: bool = False
         #: True when the panel is NOT known to be in image/bucket display mode --
         #: a fresh connect, or after a liquid/static/gif :meth:`_set_screen` left it
         #: in firmware-liquid (or another) display mode.  The lightweight
@@ -443,6 +457,8 @@ class KrakenDevice:
             # streamed frame so image display mode is established cleanly.
             self._lcd_ring_pos = None
             self._lcd_stream_needs_reinit = True
+            # Fresh handles: give the bulk interface another chance.
+            self._lcd_bulk_unavailable = False
             self._apply_init_status(init_status)
             logger.info(
                 "Connected to %s (fw=%s, brightness=%d%%, orientation=%d°)",
@@ -480,6 +496,17 @@ class KrakenDevice:
         """Human-readable device description, or ``""`` when disconnected."""
         with self._lock:
             return self._description if self.is_connected else ""
+
+    @property
+    def lcd_bulk_unavailable(self) -> bool:
+        """True when LCD image uploads are latched off (bulk EBUSY/EACCES).
+
+        Cooling/lighting/HID screens keep working; the engine uses this to stop
+        rendering+pushing sensor frames and to surface one clear error instead
+        of a reconnect storm (issue #1).
+        """
+        with self._lock:
+            return self._lcd_bulk_unavailable
 
     # -------------------------------------------------------------- telemetry
     def get_status(self) -> DeviceStatus:
@@ -659,6 +686,13 @@ class KrakenDevice:
         # the static upload.  ``set_screen("liquid")`` is called directly (not via
         # set_lcd_liquid_mode) so it doesn't re-arm the reinit flag.  Done outside
         # the lock because ``_set_screen`` acquires it itself.
+        # Bulk latched off (EBUSY/EACCES): every path below needs the bulk
+        # interface, so skip cheaply instead of hammering a claim that cannot
+        # succeed every 2 s (the engine also stops rendering; see
+        # :attr:`lcd_bulk_unavailable`).
+        if self.lcd_bulk_unavailable:
+            logger.debug("set_lcd_sensor_frame: LCD bulk unavailable; skipping")
+            return False
         if self._lcd_stream_needs_reinit:
             self._set_screen("liquid", None)  # deep display-pipeline reset (un-wedge)
             ok = self._set_screen("static", str(image_path))
@@ -734,6 +768,21 @@ class KrakenDevice:
                 self._lcd_ring_pos = target
                 self._lcd_consec_fail = 0  # frame reached the panel; clear streak
                 return True
+            except _USB_ERRORS as exc:
+                # Same discrimination as _set_screen: a bulk claim/permission
+                # failure is not a dead device -- latch uploads off and keep the
+                # HID side (cooling/lighting) connected instead of storming.
+                if getattr(exc, "errno", None) in (errno.EBUSY, errno.EACCES):
+                    self._lcd_bulk_unavailable = True
+                    logger.warning(
+                        "sensor frame: LCD bulk interface unavailable (%s); "
+                        "disabling LCD image uploads, device stays connected",
+                        exc,
+                    )
+                    return False
+                logger.exception("sensor frame: bulk transfer failed; marking disconnected")
+                self._mark_disconnected()
+                return False
             except Exception:
                 logger.exception("sensor frame: bulk transfer failed; marking disconnected")
                 self._mark_disconnected()
@@ -1053,6 +1102,10 @@ class KrakenDevice:
                     if not self._retry_lcd_upload(mode, value, watcher):
                         return False
                 logger.info("LCD set_screen mode=%s value=%r ok", mode, value)
+                if is_data_upload:
+                    # A bulk upload just worked: clear any "bulk unavailable"
+                    # latch (e.g. after the user freed the interface).
+                    self._lcd_bulk_unavailable = False
                 return True
             except _RECOVERABLE_SCREEN_ERRORS as exc:
                 # Content/validation problem on a healthy device: surface it as a
@@ -1063,6 +1116,33 @@ class KrakenDevice:
                     value,
                     exc,
                 )
+                return False
+            except _USB_ERRORS as exc:
+                # Image/GIF uploads go over the separate USB *bulk* interface
+                # (pyusb).  A claim/permission failure there (EBUSY: another
+                # driver owns the interface, e.g. the "(broken)" 2023 Elite
+                # 0x300C variant; EACCES: no usbfs permission) does NOT mean the
+                # device is gone -- the HID side (cooling, lighting, brightness,
+                # liquid screen) still works.  Disconnecting here caused an
+                # infinite reconnect->reapply->fail storm (issue #1), so latch
+                # "LCD bulk unavailable" and stay connected.  Anything else
+                # (ENODEV/EIO/...) is a real I/O failure -> disconnect.
+                if getattr(exc, "errno", None) in (errno.EBUSY, errno.EACCES):
+                    if is_data_upload:
+                        # Only image/GIF uploads use the bulk interface; a
+                        # busy/denied HID write (rare) shouldn't latch them off.
+                        self._lcd_bulk_unavailable = True
+                    logger.warning(
+                        "set_screen(lcd, %s, %r): USB interface unavailable "
+                        "(%s); %sdevice stays connected",
+                        mode,
+                        value,
+                        exc,
+                        "disabling LCD image uploads, " if is_data_upload else "",
+                    )
+                    return False
+                logger.exception("set_screen(lcd, %s, %r) failed", mode, value)
+                self._mark_disconnected()
                 return False
             except Exception:
                 logger.exception("set_screen(lcd, %s, %r) failed", mode, value)
