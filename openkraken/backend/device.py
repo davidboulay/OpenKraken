@@ -74,6 +74,20 @@ _LCD_RING_BUCKETS = 6
 #: :meth:`set_lcd_sensor_frame` / :meth:`_note_lcd_frame_stuck`.
 _LCD_FAIL_RECONNECT_THRESHOLD = 4
 
+#: Consecutive HID read desyncs tolerated before giving up on flushes and
+#: reconnecting to resync the stream.  Deliberately far above
+#: :data:`_LCD_FAIL_RECONNECT_THRESHOLD`: a desync burst is normal while the
+#: firmware drains an error storm and clears itself, whereas each reconnect
+#: emits an init burst that provokes the next desync.  Sharing one counter with
+#: the bucket-wedge escalation turned that into a self-sustaining loop.
+_LCD_DESYNC_RECONNECT_THRESHOLD = 15
+
+#: Substring identifying liquidctl's HID request/reply desync assertion
+#: ("missing messages (attempts=12, missing=1)").  It reports a crowded read
+#: stream on a healthy device, so it is handled by flushing rather than by
+#: dropping the connection.
+_DESYNC_MARKER = "missing messages"
+
 #: Plain (no-clear) re-upload attempts for transient HID-contention failures
 #: before resorting to a bucket clear, and total clear+retry attempts after that.
 #: Kept small: each plain retry consumes a fresh bucket, so over-retrying just
@@ -314,6 +328,10 @@ class KrakenDevice:
         #: reconnect once the firmware's LCD memory is wedged (see
         #: :data:`_LCD_FAIL_RECONNECT_THRESHOLD` / :meth:`_note_lcd_frame_stuck`).
         self._lcd_consec_fail: int = 0
+        #: Count of consecutive HID read desyncs, tracked separately from
+        #: :attr:`_lcd_consec_fail` so a crowded read stream never masquerades as
+        #: wedged bucket memory (see :data:`_LCD_DESYNC_RECONNECT_THRESHOLD`).
+        self._lcd_desync_consec: int = 0
         #: Latched when the USB *bulk* interface (image/GIF/sensor-frame uploads)
         #: fails with EBUSY/EACCES.  The HID side keeps working, so we stay
         #: connected and simply stop attempting bulk uploads until a manual
@@ -750,7 +768,16 @@ class KrakenDevice:
                 dev._write_then_read([0x36, 0x03])  # transfer preamble (per _send_data)
                 # Reuse the OLDEST ring slot (target); with N>=3 it is never the
                 # displayed one, so the panel keeps its current frame throughout.
-                dev._delete_bucket(target)
+                # A refused delete (firmware status 0x09) means this slot is not
+                # ours to reuse -- it is what the panel is showing, e.g. after a
+                # full set_screen("static") fallback landed there.  The setup that
+                # follows would be refused too (0x04), so stop here and record the
+                # slot as our position: the next frame then advances off it.
+                # Without this the ring pins to one bucket and every frame fails,
+                # which trips the reconnect threshold in a loop.
+                if not dev._delete_bucket(target):
+                    self._lcd_ring_pos = target
+                    return self._note_lcd_frame_stuck("delete bucket %d" % target)
                 if not dev._setup_bucket(
                     target,
                     target + 1,
@@ -766,8 +793,43 @@ class KrakenDevice:
                 if not dev._switch_bucket(target):
                     return self._note_lcd_frame_stuck("switch to bucket %d" % target)
                 self._lcd_ring_pos = target
-                self._lcd_consec_fail = 0  # frame reached the panel; clear streak
+                self._lcd_consec_fail = 0  # frame reached the panel; clear streaks
+                self._lcd_desync_consec = 0
                 return True
+            except AssertionError as exc:
+                # liquidctl asserts "missing messages" when the reply it is
+                # waiting for gets crowded out of its 12-report read budget by
+                # other traffic on the shared HID stream (firmware error bursts,
+                # streamed status, a reply we never consumed).  The cooler is
+                # healthy; the read stream is just out of step.  Disconnecting
+                # costs a full reconnect whose own init burst provokes the next
+                # desync -- the storm this used to produce.  Flush the stale
+                # reports so the next exchange starts clean, and hold the frame.
+                if _DESYNC_MARKER not in str(exc):
+                    logger.exception("sensor frame: unexpected assertion; marking disconnected")
+                    self._mark_disconnected()
+                    return False
+                try:
+                    dev.device.clear_enqueued_reports()
+                except Exception:  # pragma: no cover - flush is best-effort
+                    logger.debug("sensor frame: report flush failed", exc_info=True)
+                self._lcd_desync_consec += 1
+                if self._lcd_desync_consec >= _LCD_DESYNC_RECONNECT_THRESHOLD:
+                    logger.warning(
+                        "LCD HID stream desynced %d× in a row despite flushing; "
+                        "reconnecting to resync",
+                        self._lcd_desync_consec,
+                    )
+                    self._lcd_desync_consec = 0
+                    self._mark_disconnected()
+                else:
+                    logger.warning(
+                        "sensor frame: HID read desync (%s); flushed, holding frame (%d/%d)",
+                        exc,
+                        self._lcd_desync_consec,
+                        _LCD_DESYNC_RECONNECT_THRESHOLD,
+                    )
+                return False
             except _USB_ERRORS as exc:
                 # Same discrimination as _set_screen: a bulk claim/permission
                 # failure is not a dead device -- latch uploads off and keep the
@@ -1116,6 +1178,15 @@ class KrakenDevice:
                     value,
                     exc,
                 )
+                if _DESYNC_MARKER in str(exc):
+                    # Not a content problem at all: the reply was crowded out of
+                    # liquidctl's read budget.  Leaving those reports queued makes
+                    # the next call fail identically, so drain them here -- this is
+                    # what turned a momentary desync into minutes of rejections.
+                    try:
+                        self._dev.device.clear_enqueued_reports()
+                    except Exception:  # pragma: no cover - flush is best-effort
+                        logger.debug("set_screen: report flush failed", exc_info=True)
                 return False
             except _USB_ERRORS as exc:
                 # Image/GIF uploads go over the separate USB *bulk* interface
