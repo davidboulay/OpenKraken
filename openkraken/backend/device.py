@@ -96,19 +96,16 @@ _DESYNC_MARKER = "missing messages"
 _LCD_PLAIN_RETRIES = 2
 _LCD_CLEAR_RETRIES = 2
 
-#: Substring identifying liquidctl's read-starvation assertion, raised by
-#: ``kraken3._read_until`` as ``AssertionError("missing messages (attempts=12,
-#: missing=1)")`` when the reply it is waiting for never arrives.
-_READ_STARVED_MARKER = "missing messages"
-
-#: How many times to re-issue a ``set_screen`` whose *opening handshake* was
-#: starved by HID contention. Every set_screen (brightness/orientation/liquid
-#: included, not just uploads) begins by asking the device for its current
-#: orientation and brightness and reading until the reply arrives; a second
-#: reader on the same hidraw node can consume that reply first. Measured on a
-#: Kraken 2024 Elite: 12/12 calls succeed with exclusive access, and this
-#: assertion appears only while another client holds the node. Re-issuing clears
-#: it, so a stolen reply no longer silently loses the setting for the session.
+#: How many times to re-issue a ``set_screen`` whose *opening handshake* hit a
+#: read desync (:data:`_DESYNC_MARKER`), flushing the stale reports between
+#: attempts. Every set_screen -- brightness/orientation/liquid included, not
+#: just uploads -- begins by asking the device for its current orientation and
+#: brightness and reading until the reply arrives, so a crowded stream loses a
+#: one-shot setting outright rather than merely skipping a frame. Measured on a
+#: Kraken 2024 Elite: 12/12 calls succeed with exclusive access, and the
+#: assertion appears only while another reader holds the node. The flush is what
+#: makes retrying worthwhile -- re-issuing without it just re-reads the same
+#: desynced queue and fails identically.
 _LCD_HANDSHAKE_RETRIES = 3
 
 
@@ -824,10 +821,7 @@ class KrakenDevice:
                     logger.exception("sensor frame: unexpected assertion; marking disconnected")
                     self._mark_disconnected()
                     return False
-                try:
-                    dev.device.clear_enqueued_reports()
-                except Exception:  # pragma: no cover - flush is best-effort
-                    logger.debug("sensor frame: report flush failed", exc_info=True)
+                self._flush_hid_reports("sensor frame")
                 self._lcd_desync_consec += 1
                 if self._lcd_desync_consec >= _LCD_DESYNC_RECONNECT_THRESHOLD:
                     logger.warning(
@@ -1196,7 +1190,7 @@ class KrakenDevice:
                         " -- another process is reading this device's HID node "
                         "(a second OpenKraken instance, or another monitoring "
                         "tool); the setting was not applied"
-                        if _READ_STARVED_MARKER in str(exc)
+                        if _DESYNC_MARKER in str(exc)
                         else ""
                     ),
                 )
@@ -1205,10 +1199,8 @@ class KrakenDevice:
                     # liquidctl's read budget.  Leaving those reports queued makes
                     # the next call fail identically, so drain them here -- this is
                     # what turned a momentary desync into minutes of rejections.
-                    try:
-                        self._dev.device.clear_enqueued_reports()
-                    except Exception:  # pragma: no cover - flush is best-effort
-                        logger.debug("set_screen: report flush failed", exc_info=True)
+                    # Reached only once _set_screen_once has spent its retries.
+                    self._flush_hid_reports("set_screen")
                 return False
             except _USB_ERRORS as exc:
                 # Image/GIF uploads go over the separate USB *bulk* interface
@@ -1244,6 +1236,18 @@ class KrakenDevice:
             finally:
                 self._lcd_guard_active = False
 
+    def _flush_hid_reports(self, where: str) -> None:
+        """Drain reports still queued on the HID handle. Best-effort, never raises.
+
+        Called after a read desync: liquidctl was waiting for a reply that got
+        crowded out of its 12-report budget, so whatever *is* queued is stale and
+        would make the next exchange fail the same way. Caller holds the lock.
+        """
+        try:
+            self._dev.device.clear_enqueued_reports()
+        except Exception:  # pragma: no cover - flush is best-effort
+            logger.debug("%s: report flush failed", where, exc_info=True)
+
     def _set_screen_once(self, mode: str, value: Any) -> None:
         """``dev.set_screen("lcd", mode, value)``, retried if its handshake starves.
 
@@ -1251,11 +1255,18 @@ class KrakenDevice:
         retries are used up, so the callers' existing recoverable/IO error
         handling is unchanged.
 
-        Only the starvation signature (:data:`_READ_STARVED_MARKER`) is
-        retried. Every other ``AssertionError`` from the driver is a real
-        validation failure — an out-of-range brightness, an oversized GIF, a
-        bad channel — and must fail immediately rather than be attempted three
-        times.
+        Only a read desync (:data:`_DESYNC_MARKER`) is retried, and only after
+        flushing the stale reports — without that flush the retry re-reads the
+        same desynced queue and fails identically. Every other
+        ``AssertionError`` from the driver is a real validation failure — an
+        out-of-range brightness, an oversized GIF, a bad channel — and must fail
+        immediately rather than be attempted three times.
+
+        This is the control path's equivalent of what
+        :meth:`set_lcd_sensor_frame` does for streamed frames, with one
+        difference: a dropped frame is retried by the next tick anyway, whereas
+        a dropped brightness/orientation is a one-shot setting that would
+        otherwise be silently lost until the next apply.
         """
         for attempt in range(1, _LCD_HANDSHAKE_RETRIES + 1):
             try:
@@ -1263,12 +1274,13 @@ class KrakenDevice:
                 return
             except AssertionError as exc:
                 if (
-                    _READ_STARVED_MARKER not in str(exc)
+                    _DESYNC_MARKER not in str(exc)
                     or attempt == _LCD_HANDSHAKE_RETRIES
                 ):
                     raise
+                self._flush_hid_reports("LCD %s" % mode)
                 logger.debug(
-                    "LCD %s: handshake reply starved (%s); retry %d/%d",
+                    "LCD %s: HID read desync (%s); flushed, retrying %d/%d",
                     mode,
                     exc,
                     attempt,

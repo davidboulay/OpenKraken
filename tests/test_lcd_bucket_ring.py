@@ -41,7 +41,9 @@ class FakeKrakenDriver:
     ``undeletable`` holds the buckets the firmware refuses to delete, i.e. the
     one it is displaying (and, in one test, all of them).  ``delete_desyncs``
     counts how many leading ``_delete_bucket`` calls raise a read desync before
-    the stream behaves.
+    the stream behaves, and ``screen_desyncs`` does the same for
+    :meth:`set_screen` -- a *transient* crowded stream, as opposed to
+    ``screen_error``, which keeps failing for as long as it is set.
     """
 
     bulk_buffer_size = 512
@@ -51,9 +53,12 @@ class FakeKrakenDriver:
         self,
         undeletable: set[int] | None = None,
         delete_desyncs: int = 0,
+        screen_desyncs: int = 0,
     ) -> None:
         self.undeletable = undeletable or set()
         self.pending_desyncs = delete_desyncs
+        self.pending_screen_desyncs = screen_desyncs
+        self.screen_calls = 0
         self.bulk_device = object()  # presence is all the uploader checks
         self.device = _FakeHidDevice()
         self.deleted: list[int] = []
@@ -64,6 +69,10 @@ class FakeKrakenDriver:
         self.screen_error: Exception | None = None
 
     def set_screen(self, channel: str, mode: str, value) -> None:
+        self.screen_calls += 1
+        if self.pending_screen_desyncs > 0:
+            self.pending_screen_desyncs -= 1
+            raise AssertionError(_DESYNC)
         if self.screen_error is not None:
             raise self.screen_error
 
@@ -207,6 +216,33 @@ class LcdBucketRingTest(unittest.TestCase):
         self.assertFalse(ok, "the desynced call cannot be reported as applied")
         self.assertTrue(dev.is_connected, "a desync must not drop the connection")
         self.assertGreater(driver.device.clears, 0, "stale reports must be flushed")
+
+    def test_a_transient_desync_is_retried_in_place(self):
+        """A one-shot setting must survive a momentary crowded stream.
+
+        Unlike a streamed frame, which the next tick re-sends anyway, brightness
+        and orientation are applied once -- so losing the call loses the setting
+        until something applies it again.  The flush is what makes the retry
+        work: re-issuing without draining re-reads the same stale reports.
+        """
+        dev, driver = self._connected_device(screen_desyncs=1)
+
+        ok = dev.set_lcd_brightness(50)
+
+        self.assertTrue(ok, "the retried call must be reported as applied")
+        self.assertEqual(driver.screen_calls, 2, "exactly one retry was needed")
+        self.assertGreater(driver.device.clears, 0, "the retry must flush first")
+        self.assertTrue(dev.is_connected)
+
+    def test_a_content_error_is_not_retried(self):
+        """The retry budget is for desyncs only, not for invalid input."""
+        dev, driver = self._connected_device()
+        driver.screen_error = AssertionError("Max file size after resize is 24MB")
+
+        ok = dev.set_lcd_brightness(50)
+
+        self.assertFalse(ok)
+        self.assertEqual(driver.screen_calls, 1, "a validation error must fail at once")
 
     def test_set_screen_does_not_flush_for_a_content_error(self):
         """An oversized GIF or missing file is not a stream problem."""
