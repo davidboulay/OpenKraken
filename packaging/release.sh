@@ -81,7 +81,15 @@ info "version bumped in __init__.py + pyproject.toml + packaging/arch/PKGBUILD"
 
 # --- 2. commit + tag ---------------------------------------------------------
 git -C "$ROOT" add openkraken/__init__.py pyproject.toml packaging/arch/PKGBUILD
-git -C "$ROOT" commit -q -m "Release v$NEW"
+# Re-running for a version whose bump is already committed (by hand, or by an
+# earlier run that got as far as the commit) stages nothing, and `git commit`
+# then fails and aborts the release. Tag the existing commit instead of
+# demanding an empty one.
+if git -C "$ROOT" diff --cached --quiet; then
+    info "version files already say v$NEW; tagging the existing commit"
+else
+    git -C "$ROOT" commit -q -m "Release v$NEW"
+fi
 git -C "$ROOT" tag -a "v$NEW" -m "OpenKraken v$NEW"
 info "committed and tagged v$NEW"
 
