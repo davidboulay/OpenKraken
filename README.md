@@ -196,8 +196,8 @@ the app doesn't need to be running after applying them once.
 ## Updating
 
 - **APT installs** update like any package: `sudo apt upgrade`.
-- **Arch installs** update by rebuilding from an updated checkout:
-  `git pull && cd packaging/arch && ./build-pkg.sh --install`.
+- **Arch installs** update in-app (below), or by rebuilding from an updated
+  checkout: `git pull && cd packaging/arch && ./build-pkg.sh --install`.
 - **In-app**: with *Check for updates on launch* enabled (Settings, default on),
   OpenKraken quietly checks GitHub at startup and shows a desktop notification
   when a new version exists. **Update now** then does whatever suits how you
@@ -211,10 +211,12 @@ the app doesn't need to be running after applying them once.
   | `.deb` / APT    | downloads the release `.deb`, then `pkexec apt-get install`          |
   | Arch package    | downloads a release `.pkg.tar.zst` if one exists, `pkexec pacman -U` |
 
-  Releases currently ship a `.deb` only, so on Arch the notification reports the
-  new version and points at the rebuild command instead of offering a one-click
-  update. The same flow is available manually via **Settings → Check for
-  updates**.
+  Releases carry both packages: `packaging/release.sh` builds and attaches the
+  Arch `.pkg.tar.zst` next to the `.deb`. The GitHub Actions workflow only
+  builds the `.deb`, so a release cut on a machine without `makepkg` ships no
+  Arch asset — the notification then reports the new version and points at the
+  rebuild command instead of offering one-click. The same flow is available
+  manually via **Settings → Check for updates**.
 
 ## Permissions
 

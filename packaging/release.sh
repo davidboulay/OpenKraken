@@ -11,12 +11,17 @@
 #   1. compute the new version and write it to pyproject.toml + openkraken/__init__.py
 #   2. commit "Release vX.Y.Z" and create an annotated tag vX.Y.Z
 #   3. push the branch and the tag
-#   4. build the .deb (packaging/build-deb.sh)
-#   5. create a GitHub release for the tag with the .deb attached (needs `gh`)
+#   4. build the .deb (packaging/build-deb.sh) and, when makepkg is available,
+#      the Arch package (packaging/arch/build-pkg.sh)
+#   5. create a GitHub release for the tag with both packages attached (needs `gh`)
 #
 # The GitHub Actions workflow (.github/workflows/release.yml) ALSO builds and
 # attaches a .deb on any pushed tag, so step 5 is belt-and-braces for local runs
-# and a no-op-safe if a release already exists.
+# and a no-op-safe if a release already exists. CI does NOT build the Arch
+# package (no makepkg on the runner), so that asset only appears on releases cut
+# from a machine that has it — which is what the in-app updater needs in order
+# to offer Arch users a one-click `pkexec pacman -U` update. Without it they
+# just get the "rebuild from an updated checkout" hint.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
@@ -26,6 +31,7 @@ PYPROJECT="$ROOT/pyproject.toml"
 PKGBUILD_FILE="$ROOT/packaging/arch/PKGBUILD"
 
 err() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 info() { printf '\033[1;35m==>\033[0m %s\n' "$*"; }
 
 current_version() {
@@ -85,20 +91,42 @@ git -C "$ROOT" push origin "$BRANCH"
 git -C "$ROOT" push origin "v$NEW"
 info "pushed $BRANCH and tag v$NEW"
 
-# --- 4. build the .deb -------------------------------------------------------
+# --- 4. build the packages ---------------------------------------------------
 info "building the .deb"
 "$SCRIPT_DIR/build-deb.sh"
 DEB="$(ls -t "$SCRIPT_DIR/dist/openkraken_${NEW}_"*.deb 2>/dev/null | head -1 || true)"
 [ -n "$DEB" ] || err "build-deb.sh did not produce openkraken_${NEW}_*.deb"
 info "built $DEB"
 
+# The Arch package is optional rather than a hard requirement: makepkg only
+# exists on pacman distros, and requiring both toolchains would mean releases
+# could only ever be cut from a machine carrying each. --force because a local
+# build of this version may already sit in packaging/arch/dist/, and makepkg
+# aborts rather than overwrite it. build-pkg.sh keeps pkgver in step with
+# pyproject.toml, which step 1 already committed, so it leaves the tree clean.
+ARCH_PKG=""
+if command -v makepkg >/dev/null 2>&1; then
+    info "building the Arch package"
+    "$SCRIPT_DIR/arch/build-pkg.sh" --force >/dev/null
+    ARCH_PKG="$(ls -t "$SCRIPT_DIR/arch/dist/openkraken-${NEW}-"*.pkg.tar.* 2>/dev/null | head -1 || true)"
+    [ -n "$ARCH_PKG" ] || err "build-pkg.sh did not produce openkraken-${NEW}-*.pkg.tar.*"
+    info "built $ARCH_PKG"
+else
+    warn "makepkg not found — this release will ship no Arch package, so the"
+    warn "in-app updater cannot offer Arch users a one-click update for v$NEW."
+fi
+
+# Assets to attach, in the order they should appear on the release.
+RELEASE_ASSETS=("$DEB")
+[ -n "$ARCH_PKG" ] && RELEASE_ASSETS+=("$ARCH_PKG")
+
 # --- 5. GitHub release -------------------------------------------------------
 if command -v gh >/dev/null 2>&1; then
     info "creating GitHub release v$NEW"
     if gh release view "v$NEW" >/dev/null 2>&1; then
-        gh release upload "v$NEW" "$DEB" --clobber
+        gh release upload "v$NEW" "${RELEASE_ASSETS[@]}" --clobber
     else
-        gh release create "v$NEW" "$DEB" \
+        gh release create "v$NEW" "${RELEASE_ASSETS[@]}" \
             --title "OpenKraken v$NEW" \
             --generate-notes
     fi

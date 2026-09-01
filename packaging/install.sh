@@ -78,9 +78,10 @@ if [ "$(distro_family)" = "pacman" ]; then
     warn "Arch detected: the native package is usually the better route."
     info "  git clone $REPO_URL && cd OpenKraken/packaging/arch && ./build-pkg.sh --install"
     info "Continuing with the source/venv install in 5s (Ctrl-C to switch)..."
-    # Only pause for a human; piped installs must never block. Spelled as a
-    # full `if` rather than `[ -t 0 ] && sleep 5`, because under `set -e` that
-    # AND-list returns 1 on a non-tty and would abort the installer outright.
+    # Only pause for a human; piped installs must never block. Written as an
+    # `if` purely for legibility: `[ -t 0 ] && sleep 5` behaves identically in
+    # this position, since `set -e` ignores a short-circuited AND-list unless it
+    # is the last command of a function or of the script itself.
     if [ -t 0 ]; then
         sleep 5
     fi
