@@ -1,0 +1,19 @@
+# OpenKraken — non-root access to NZXT devices (Arch Linux variant).
+#
+# BOTH lines are required: "hidraw" covers cooling/lighting/status (HID
+# reports), and "usb" covers the LCD — a separate USB *bulk* interface driven
+# through pyusb — plus device enumeration itself. Without the usb line
+# liquidctl cannot read the string descriptors and enumeration dies with
+# "The device has no langid (permission issue...)".
+#
+# Unlike the Debian rule this carries no MODE/GROUP: Arch has no plugdev group,
+# and naming a group that does not exist makes udev log an error for every
+# matching device. TAG+="uaccess" is enough on its own — systemd-logind puts an
+# ACL for the user of the active local seat onto each node, which is exactly how
+# liquidctl's own upstream rule (71-liquidctl.rules) grants access.
+#
+# Consequence worth knowing: uaccess follows the *active seat*, so a bare SSH
+# session has no access even for the same user. Log in locally, or add your own
+# GROUP= rule if you need headless control.
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess"

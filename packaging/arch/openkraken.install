@@ -1,0 +1,46 @@
+# pacman scriptlet for openkraken.
+#
+# Arch already ships hooks that cover most of what a Debian postinst does by
+# hand: 35-systemd-udev-reload.hook reloads udev rules, and
+# update-desktop-database.hook / gtk-update-icon-cache.hook refresh the desktop
+# and icon caches. So there is deliberately no duplication of those here.
+#
+# What the hooks do NOT do is *re-apply* rules to devices that are already
+# plugged in — a reload alone leaves an attached cooler with its old
+# permissions until it is re-plugged or the machine reboots. Hence the trigger
+# below. It reloads first because scriptlets run inside the transaction, i.e.
+# *before* the PostTransaction udev-reload hook: triggering without reloading
+# would re-apply the old rule set and change nothing.
+
+_udev_apply() {
+    command -v udevadm >/dev/null 2>&1 || return 0
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+    # Scoped to the two subsystems the rule matches, rather than a full
+    # `udevadm trigger`, so nothing else on the bus gets disturbed.
+    udevadm trigger --subsystem-match=hidraw --subsystem-match=usb >/dev/null 2>&1 || true
+}
+
+post_install() {
+    _udev_apply
+    cat <<'MSG'
+
+  OpenKraken installed. Launch it from your app launcher, or run: openkraken
+
+  Device access comes from /usr/lib/udev/rules.d/70-openkraken.rules, which
+  grants the user of the active local seat an ACL on the cooler's hidraw and
+  USB nodes. That has just been applied to any attached cooler; if the app
+  still reports "Disconnected", re-plug the cooler or reboot.
+
+  On Hyprland/Omarchy: install qt6-wayland for native Wayland output, and see
+  /usr/share/doc/openkraken/README.md for the autostart and window-rule
+  snippets.
+
+MSG
+}
+
+post_upgrade() {
+    _udev_apply
+}
+
+# post_remove needs nothing: the udev-reload hook fires on removal too, and a
+# rule that is gone cannot be re-applied to anything.

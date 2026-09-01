@@ -32,13 +32,27 @@ GIT_LIQUIDCTL="git+https://github.com/liquidctl/liquidctl"
 # NZXT vendor id and where the device-access udev rule is installed.
 NZXT_VENDOR_ID="1e71"
 UDEV_RULE_PATH="/etc/udev/rules.d/70-openkraken.rules"
+
 # TWO rules are required: hidraw covers status/cooling/lighting (HID reports),
 # and the raw-usb rule covers the LCD, which liquidctl drives over a separate
 # USB *bulk* interface via pyusb — without it enumeration itself crashes with
 # "The device has no langid (permission issue...)" (issue #4).
-UDEV_RULE_BODY='# OpenKraken — non-root access to NZXT coolers (HID + USB bulk for the LCD).
+#
+# The GROUP fallback is distro-dependent. Debian/Ubuntu have a plugdev group and
+# conventionally use it for removable-device access; Arch does not, and naming a
+# group that does not exist makes udev log an error for every matching device.
+# TAG+="uaccess" is what actually grants access on any systemd-logind desktop
+# (an ACL for the user of the active local seat), so the group is only ever a
+# fallback for systems without seat management.
+if [[ -r /etc/os-release ]] && grep -qE '^(ID|ID_LIKE)=.*\b(arch|archlinux)\b' /etc/os-release; then
+    UDEV_RULE_BODY='# OpenKraken — non-root access to NZXT coolers (HID + USB bulk for the LCD).
+SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess"'
+else
+    UDEV_RULE_BODY='# OpenKraken — non-root access to NZXT coolers (HID + USB bulk for the LCD).
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"'
+fi
 
 # --- pretty progress --------------------------------------------------------
 step() { printf '\n\033[1;35m==>\033[0m \033[1m%s\033[0m\n' "$*"; }

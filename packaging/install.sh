@@ -69,6 +69,23 @@ step "OpenKraken installer"
 info "source dir : $SRC_DIR"
 info "repository : $REPO_URL"
 
+# On Arch every dependency (including liquidctl >= 1.16, which knows the Kraken
+# 2024) is in the official repositories, so the native package is strictly
+# better than a venv: no vendoring, pacman-managed, and it installs the udev
+# rule for you. Point it out, but do not force it — the venv route still works
+# and is what someone tracking main from a checkout wants.
+if [ "$(distro_family)" = "pacman" ]; then
+    warn "Arch detected: the native package is usually the better route."
+    info "  git clone $REPO_URL && cd OpenKraken/packaging/arch && ./build-pkg.sh --install"
+    info "Continuing with the source/venv install in 5s (Ctrl-C to switch)..."
+    # Only pause for a human; piped installs must never block. Spelled as a
+    # full `if` rather than `[ -t 0 ] && sleep 5`, because under `set -e` that
+    # AND-list returns 1 on a non-tty and would abort the installer outright.
+    if [ -t 0 ]; then
+        sleep 5
+    fi
+fi
+
 # --- check prerequisites ----------------------------------------------------
 step "Checking prerequisites"
 

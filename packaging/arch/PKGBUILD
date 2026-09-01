@@ -1,0 +1,143 @@
+# Maintainer: OpenKraken contributors <noreply@github.com>
+#
+# PKGBUILD for OpenKraken — builds from the checkout this file lives in, so
+# `makepkg -si` here packages your working tree (the same ergonomics as
+# ../build-deb.sh and ../../setup.sh). ../arch/build-pkg.sh is a friendlier
+# wrapper around it.
+#
+# Nothing is vendored. Arch's `extra` repository ships liquidctl 1.16.0, which
+# already knows the Kraken 2024 Elite RGB (1e71:3012), and python-pyqt6 /
+# python-pillow are official too — so unlike the .deb (which bundles liquidctl
+# for Debian stable) this package is a thin wrapper over real dependencies.
+
+pkgname=openkraken
+pkgver=0.3.0
+pkgrel=1
+pkgdesc="NZXT Kraken control for Linux — loop monitoring, firmware fan curves, and the round LCD"
+arch=('any')
+url="https://github.com/davidboulay/OpenKraken"
+license=('MIT')
+depends=(
+    'python'
+    'python-pyqt6'
+    'python-pillow'
+    'liquidctl>=1.15'
+    # The LCD sensor screens draw text with Pillow, which needs a real TrueType
+    # face — PIL's built-in bitmap font is unreadable at the 210 px readout
+    # size. Any provider of the virtual ttf-font (ttf-dejavu, ttf-liberation,
+    # noto-fonts, ...) satisfies the candidate chain in backend/lcd_render.py.
+    'ttf-font'
+)
+optdepends=(
+    'qt6-wayland: native Wayland output (recommended on Hyprland/Omarchy; without it Qt falls back to XWayland)'
+    'libnotify: desktop notification when an update is available'
+    'polkit: authentication dialog for the in-app updater'
+    'nvidia-utils: discrete NVIDIA GPU metrics via nvidia-smi'
+    'xdg-utils: "Release notes" button in the update notification'
+)
+# Pure Python: nothing to strip, and an empty -debug package is just noise.
+options=('!debug')
+install="${pkgname}.install"
+# No source array: the payload is the surrounding git checkout (see _repo_root).
+source=()
+sha256sums=()
+
+# Absolute path of the repository this PKGBUILD is part of: packaging/arch/../..
+_repo_root="$(cd -- "${startdir}/../.." >/dev/null 2>&1 && pwd || true)"
+
+# Where the code lands. Deliberately NOT the versioned site-packages dir: this
+# path does not move when Arch bumps python 3.x, so a locally built package
+# keeps working across interpreter updates instead of silently breaking until
+# the user remembers to rebuild it.
+_libdir="/usr/lib/${pkgname}"
+
+prepare() {
+    if [[ -z "$_repo_root" || ! -f "$_repo_root/pyproject.toml" ]]; then
+        echo "==> ERROR: this PKGBUILD must stay inside the OpenKraken checkout" >&2
+        echo "    (expected pyproject.toml two levels up from $startdir)." >&2
+        return 1
+    fi
+
+    # Guard against a version bump that touched pyproject.toml but not pkgver:
+    # a mislabelled package is worse than a failed build.
+    local _proj_ver
+    _proj_ver="$(sed -n 's/^[[:space:]]*version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$_repo_root/pyproject.toml" | head -1)"
+    if [[ "$_proj_ver" != "$pkgver" ]]; then
+        echo "==> ERROR: pkgver=$pkgver but pyproject.toml says $_proj_ver." >&2
+        echo "    Update pkgver in $startdir/PKGBUILD (build-pkg.sh does this for you)." >&2
+        return 1
+    fi
+}
+
+package() {
+    # --- the Python package ------------------------------------------------
+    install -dm755 "$pkgdir$_libdir"
+    cp -a "$_repo_root/openkraken" "$pkgdir$_libdir/openkraken"
+    # Drop caches so the package is lean and reproducible. Byte-compiled files
+    # are intentionally NOT shipped: they are tied to one interpreter version,
+    # and _libdir is version-independent by design.
+    find "$pkgdir$_libdir/openkraken" -type d -name '__pycache__' -prune -exec rm -rf {} +
+    find "$pkgdir$_libdir/openkraken" -type f -name '*.py[co]' -delete
+
+    # --- launcher ----------------------------------------------------------
+    # `python3` rather than a build-time-pinned interpreter, for the same
+    # version-independence reason as _libdir. Every import resolves out of the
+    # running interpreter's own site-packages (PyQt6, Pillow, liquidctl).
+    install -dm755 "$pkgdir/usr/bin"
+    cat >"$pkgdir/usr/bin/$pkgname" <<'PY'
+#!/usr/bin/env python3
+"""OpenKraken launcher (Arch package).
+
+Puts the packaged code on sys.path, then hands off to openkraken.app:main.
+PyQt6, Pillow and liquidctl all come from the distribution's site-packages
+(depends: python-pyqt6, python-pillow, liquidctl) — nothing is vendored here.
+"""
+import sys
+
+_LIB = "/usr/lib/openkraken"
+# Insert at 1, not 0: the interpreter's own dirs still win.
+if _LIB not in sys.path:
+    sys.path.insert(1, _LIB)
+
+from openkraken.app import main  # noqa: E402
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+PY
+    chmod 755 "$pkgdir/usr/bin/$pkgname"
+
+    # --- desktop entry -----------------------------------------------------
+    install -dm755 "$pkgdir/usr/share/applications"
+    cat >"$pkgdir/usr/share/applications/$pkgname.desktop" <<'DESKTOP'
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=OpenKraken
+GenericName=Liquid Cooler Control
+Comment=Monitor and control your NZXT Kraken liquid cooler
+Exec=/usr/bin/openkraken
+Icon=openkraken
+Terminal=false
+Categories=System;Monitor;
+Keywords=nzxt;kraken;cooler;aio;liquid;temperature;fan;pump;lcd;
+StartupNotify=true
+StartupWMClass=openkraken
+DESKTOP
+    chmod 644 "$pkgdir/usr/share/applications/$pkgname.desktop"
+
+    # --- icon --------------------------------------------------------------
+    install -Dm644 "$_repo_root/openkraken/resources/openkraken.svg" \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/$pkgname.svg"
+
+    # --- udev rule ---------------------------------------------------------
+    # /usr/lib/udev/rules.d (not /etc): package-owned, and it lets Arch's
+    # 35-systemd-udev-reload.hook reload udev for us on install/upgrade/remove.
+    install -Dm644 "$startdir/70-$pkgname.rules" \
+        "$pkgdir/usr/lib/udev/rules.d/70-$pkgname.rules"
+
+    # --- docs & licence ----------------------------------------------------
+    install -Dm644 "$_repo_root/README.md"   "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 "$_repo_root/PROTOCOL.md" "$pkgdir/usr/share/doc/$pkgname/PROTOCOL.md"
+    install -Dm644 "$_repo_root/LICENSE"     "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
