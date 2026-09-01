@@ -260,7 +260,7 @@ Version: $VERSION
 Architecture: $ARCH
 Maintainer: OpenKraken contributors <noreply@github.com>
 Installed-Size: $INSTALLED_SIZE_KB
-Depends: python3 (>= 3.10), python3-pyqt6, python3-pil
+Depends: python3 (>= 3.10), python3-pyqt6, python3-pil, fonts-dejavu-core
 Section: utils
 Priority: optional
 Homepage: https://github.com/davidboulay/OpenKraken

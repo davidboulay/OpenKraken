@@ -94,10 +94,30 @@ _LIQUID_MAX = 60.0
 
 _PLACEHOLDER = "--"
 
-# Font candidate chain (per spec).
+# Font candidate chain. DejaVu Sans Bold is the design font, but it is not
+# universally installed: Debian/Ubuntu ship it in fonts-dejavu-core (hence the
+# truetype/dejavu path), while on Arch it is the optional ttf-dejavu package and
+# lives in a differently named directory. So the chain widens to the other
+# metric-generous bold sans families that a desktop is likely to already have
+# (ttf-liberation, noto-fonts — both satisfy Arch's virtual "ttf-font"). Bare
+# file names are resolved by Pillow, which walks the standard font directories;
+# the absolute paths are there to make the common cases deterministic.
+#
+# Anything here beats the fallback: PIL's built-in font is a bitmap face that
+# looks badly aliased scaled up to the 210 px temperature readout.
 _FONT_CANDIDATES = (
-    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    # DejaVu Sans Bold — the intended face.
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Debian/Ubuntu
+    "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",              # Arch
     "DejaVuSans-Bold.ttf",
+    # Liberation Sans Bold — metric-compatible with Arial, on most desktops.
+    "/usr/share/fonts/liberation/LiberationSans-Bold.ttf",   # Arch
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",  # Debian
+    "LiberationSans-Bold.ttf",
+    # Noto Sans Bold — the last broad fallback.
+    "/usr/share/fonts/noto/NotoSans-Bold.ttf",               # Arch
+    "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",      # Debian
+    "NotoSans-Bold.ttf",
 )
 
 # --------------------------------------------------------------------------- #
@@ -154,7 +174,10 @@ def _font(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
 
     if font is None:
         _LOGGER.warning(
-            "DejaVuSans-Bold not found; falling back to PIL default font at %d px",
+            "no bold TrueType face found (tried DejaVu/Liberation/Noto); "
+            "falling back to PIL's bitmap font at %d px. Install a font "
+            "package (Arch: ttf-dejavu; Debian: fonts-dejavu-core) for "
+            "legible LCD sensor screens.",
             size,
         )
         try:
