@@ -9,9 +9,14 @@ Update model:
 * **git checkout** (the dev / ``install.sh`` layout): compare the local ``HEAD``
   to ``origin/main`` on GitHub.  :func:`apply_update` does ``git pull --ff-only``
   and the app then restarts.
-* **anything else** (e.g. an installed ``.deb``): we can still *report* whether
-  the upstream default branch has advanced, but :func:`apply_update` declines and
-  points at the releases page instead.
+* **distribution package** (a ``.deb`` on Debian/Ubuntu, a ``.pkg.tar.zst`` on
+  Arch): compare the installed version to the newest GitHub release.  When that
+  release carries an asset in the right format *and* PolicyKit is available,
+  :func:`apply_update` downloads it and installs it with ``pkexec`` --
+  ``apt-get install`` or ``pacman -U`` as appropriate.
+* **anything else**: we can still *report* whether a newer version exists, but
+  :func:`apply_update` declines and points at the package manager or the
+  releases page instead.
 """
 
 from __future__ import annotations
@@ -32,6 +37,13 @@ _API_LATEST_COMMIT = f"https://api.github.com/repos/{REPO}/commits/{_BRANCH}"
 _API_LATEST_RELEASE = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_URL = f"https://github.com/{REPO}/releases"
 _TIMEOUT = 6.0
+
+# Release-asset extension that each packaged flavour can install itself from.
+# A flavour absent from this map can only ever report, never apply.
+_FLAVOR_ASSET_SUFFIX = {
+    "deb": ".deb",
+    "pacman": ".pkg.tar.zst",
+}
 
 
 def _get_json(url: str) -> dict | None:
@@ -66,20 +78,24 @@ def latest_release_version() -> str | None:
     return tag.lstrip("vV") if isinstance(tag, str) and tag else None
 
 
-def _latest_release_info() -> tuple[str | None, str | None]:
-    """(version-without-v, direct .deb asset url) of the newest release."""
+def _latest_release_info(asset_suffix: str | None = None) -> tuple[str | None, str | None]:
+    """(version-without-v, download url of the first *asset_suffix* asset).
+
+    ``asset_suffix`` of ``None`` (an unpackaged install) skips the asset hunt
+    and returns the version only.
+    """
     payload = _get_json(_API_LATEST_RELEASE)
     if not payload:
         return None, None
     tag = payload.get("tag_name")
     version = tag.lstrip("vV") if isinstance(tag, str) and tag else None
-    deb_url = None
-    for asset in payload.get("assets") or []:
-        name = str(asset.get("name", ""))
-        if name.endswith(".deb"):
-            deb_url = asset.get("browser_download_url")
-            break
-    return version, deb_url
+    asset_url = None
+    if asset_suffix:
+        for asset in payload.get("assets") or []:
+            if str(asset.get("name", "")).endswith(asset_suffix):
+                asset_url = asset.get("browser_download_url")
+                break
+    return version, asset_url
 
 
 @dataclass
@@ -94,7 +110,10 @@ class UpdateStatus:
     message: str                  # human-readable summary for the UI
     error: str | None = None      # set when the check itself failed
     latest_version: str | None = None  # newest release version, when known
-    deb_url: str | None = None    # direct .deb asset of the newest release
+    #: How this copy was installed: "git", "deb", "pacman" or "unknown".
+    flavor: str = "unknown"
+    #: Newest release's installable asset for this flavour (.deb / .pkg.tar.zst).
+    asset_url: str | None = None
 
 
 def _repo_dir() -> Path:
@@ -122,6 +141,38 @@ def _is_git_checkout(repo: Path) -> bool:
         return False
     rc, _ = _run_git(["rev-parse", "--is-inside-work-tree"], repo)
     return rc == 0
+
+
+def _install_flavor() -> str:
+    """How this copy of OpenKraken was installed.
+
+    ``"git"`` (a checkout, incl. the ``install.sh`` / ``setup.sh`` layout),
+    ``"pacman"`` or ``"deb"`` (a distribution package that owns our files), or
+    ``"unknown"``.
+
+    The package tests ask the package manager who owns *this very file* rather
+    than sniffing ``/etc/os-release``: that is what actually decides which
+    command can upgrade us.  A pacman-based distro with a source checkout must
+    come out as ``"git"``, which an os-release check would get wrong.
+    """
+    import shutil
+
+    if _is_git_checkout(_repo_dir()):
+        return "git"
+
+    me = str(Path(__file__).resolve())
+    for flavor, cmd in (("pacman", ["pacman", "-Qo"]), ("deb", ["dpkg", "-S"])):
+        if shutil.which(cmd[0]) is None:
+            continue
+        try:
+            proc = subprocess.run(
+                [*cmd, me], capture_output=True, text=True, timeout=_TIMEOUT
+            )
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if proc.returncode == 0:
+            return flavor
+    return "unknown"
 
 
 def _local_head(repo: Path) -> str | None:
@@ -165,30 +216,32 @@ def check_for_update() -> UpdateStatus:
 
     remote_short = remote[:7]
     if not is_git or local is None:
-        # Not a git checkout (e.g. a .deb install): compare the installed
-        # version to the newest GitHub release. When the release ships a .deb
-        # and PolicyKit is available we can self-update by downloading it and
-        # installing via pkexec (Clippy-style).
+        # A packaged install: compare the installed version to the newest
+        # GitHub release. When that release carries an asset our package
+        # manager understands and PolicyKit is available, we can self-update by
+        # downloading it and installing via pkexec (Clippy-style).
         import shutil as _shutil
 
         from openkraken import __version__ as _installed
 
-        latest, deb_url = _latest_release_info()
+        flavor = _install_flavor()
+        suffix = _FLAVOR_ASSET_SUFFIX.get(flavor)
+        latest, asset_url = _latest_release_info(suffix)
         if latest and _version_tuple(latest) > _version_tuple(_installed):
-            can_deb = bool(deb_url) and _shutil.which("pkexec") is not None
+            can_self_install = bool(asset_url) and _shutil.which("pkexec") is not None
             return UpdateStatus(
                 checked=True,
                 update_available=True,
-                can_apply=can_deb,
+                can_apply=can_self_install,
                 local_rev=None,
                 remote_rev=latest,
                 message=(
                     f"v{latest} is available (you have v{_installed})."
-                    + ("" if can_deb else
-                       " Update via your package manager or the releases page.")
+                    + ("" if can_self_install else f" {_manual_update_hint(flavor)}")
                 ),
                 latest_version=latest,
-                deb_url=deb_url,
+                flavor=flavor,
+                asset_url=asset_url,
             )
         return UpdateStatus(
             checked=True,
@@ -198,6 +251,7 @@ def check_for_update() -> UpdateStatus:
             remote_rev=latest or remote_short,
             message=f"OpenKraken v{_installed} is up to date.",
             latest_version=latest,
+            flavor=flavor,
         )
 
     if local == remote:
@@ -208,6 +262,7 @@ def check_for_update() -> UpdateStatus:
             local_rev=local[:7],
             remote_rev=remote_short,
             message="OpenKraken is up to date.",
+            flavor="git",
         )
     return UpdateStatus(
         checked=True,
@@ -216,15 +271,28 @@ def check_for_update() -> UpdateStatus:
         local_rev=local[:7],
         remote_rev=remote_short,
         message=f"Update available ({local[:7]} → {remote_short}).",
+        flavor="git",
     )
 
 
-def _download_deb(url: str, timeout: float = 180.0) -> str | None:
-    """Download a release .deb to a temp file; return its path or None."""
+def _manual_update_hint(flavor: str) -> str:
+    """One sentence telling the user how to update this kind of install."""
+    if flavor == "pacman":
+        return (
+            "Update with your package manager, or rebuild from "
+            "packaging/arch/ in an updated checkout."
+        )
+    if flavor == "deb":
+        return "Update with `sudo apt upgrade`, or see the releases page."
+    return "Update via your package manager or the releases page."
+
+
+def _download_asset(url: str, suffix: str, timeout: float = 180.0) -> str | None:
+    """Download a release asset to a temp file; return its path or None."""
     import shutil
     import tempfile
 
-    fd, path = tempfile.mkstemp(prefix="openkraken-update-", suffix=".deb")
+    fd, path = tempfile.mkstemp(prefix="openkraken-update-", suffix=suffix)
     try:
         import os
 
@@ -238,15 +306,32 @@ def _download_deb(url: str, timeout: float = 180.0) -> str | None:
         return None
 
 
-def _install_deb(path: str, timeout: float = 300.0) -> tuple[bool, str]:
-    """Install a .deb as root via PolicyKit (pkexec shows a password dialog)."""
+# Root command that installs a downloaded package, per flavour. Both are
+# non-interactive and accept a downgrade, so re-installing the same or an older
+# version (a rollback) works the same way an upgrade does.
+_FLAVOR_INSTALL_CMD = {
+    "deb": ["apt-get", "install", "-y", "--allow-downgrades"],
+    "pacman": ["pacman", "-U", "--noconfirm"],
+}
+
+
+def _install_package(path: str, flavor: str, timeout: float = 300.0) -> tuple[bool, str]:
+    """Install a downloaded package as root via PolicyKit.
+
+    ``pkexec`` raises the desktop's authentication dialog; a dismissed or failed
+    prompt comes back as exit code 126/127, which we report as a cancellation
+    rather than a package-manager failure.
+    """
     import shutil
 
+    argv = _FLAVOR_INSTALL_CMD.get(flavor)
+    if argv is None:
+        return False, f"Don't know how to install a package for a {flavor!r} install."
     if shutil.which("pkexec") is None:
         return False, "pkexec (PolicyKit) is not available."
     try:
         proc = subprocess.run(
-            ["pkexec", "apt-get", "install", "-y", "--allow-downgrades", path],
+            ["pkexec", *argv, path],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -258,7 +343,7 @@ def _install_deb(path: str, timeout: float = 300.0) -> tuple[bool, str]:
     if proc.returncode in (126, 127):  # dialog dismissed / auth failed
         return False, "Authentication cancelled."
     detail = (proc.stderr or proc.stdout or "").strip().splitlines()
-    return False, detail[-1] if detail else f"apt-get exited {proc.returncode}"
+    return False, detail[-1] if detail else f"{argv[0]} exited {proc.returncode}"
 
 
 def _icon_path() -> str:
@@ -336,10 +421,12 @@ def apply_update(status: UpdateStatus | None = None) -> tuple[bool, str]:
     """Apply the available update; return (success, message). Never raises.
 
     * git checkout -> ``git pull --ff-only`` (unchanged historic path);
-    * .deb install -> download the newest release's .deb and install it via
-      ``pkexec apt-get install`` (PolicyKit password dialog), Clippy-style.
-      ``status`` (from :func:`check_for_update`) supplies the asset url; when
-      omitted it is re-fetched.
+    * packaged install -> download the newest release's asset for this flavour
+      (``.deb`` on Debian/Ubuntu, ``.pkg.tar.zst`` on Arch) and install it via
+      ``pkexec`` (PolicyKit password dialog), Clippy-style.
+
+    ``status`` (from :func:`check_for_update`) supplies the flavour and asset
+    url; when omitted both are re-derived.
     """
     repo = _repo_dir()
     if _is_git_checkout(repo):
@@ -350,15 +437,23 @@ def apply_update(status: UpdateStatus | None = None) -> tuple[bool, str]:
         _LOGGER.info("updated via git pull: %s", out.replace("\n", " ")[:200])
         return True, "Updated. Restart OpenKraken to run the new version."
 
-    deb_url = status.deb_url if status is not None else None
-    if not deb_url:
-        _, deb_url = _latest_release_info()
-    if not deb_url:
-        return False, "No .deb found on the latest release; update via your package manager."
-    path = _download_deb(deb_url)
+    flavor = status.flavor if status is not None and status.flavor != "unknown" else _install_flavor()
+    suffix = _FLAVOR_ASSET_SUFFIX.get(flavor)
+    if suffix is None:
+        return False, _manual_update_hint(flavor)
+
+    asset_url = status.asset_url if status is not None else None
+    if not asset_url:
+        _, asset_url = _latest_release_info(suffix)
+    if not asset_url:
+        return False, (
+            f"The latest release ships no {suffix} asset. "
+            f"{_manual_update_hint(flavor)}"
+        )
+    path = _download_asset(asset_url, suffix)
     if path is None:
         return False, "Could not download the update."
-    ok, msg = _install_deb(path)
+    ok, msg = _install_package(path, flavor)
     try:  # best-effort temp cleanup either way
         import os
 
