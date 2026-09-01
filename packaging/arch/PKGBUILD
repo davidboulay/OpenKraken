@@ -11,7 +11,7 @@
 # for Debian stable) this package is a thin wrapper over real dependencies.
 
 pkgname=openkraken
-pkgver=0.3.0
+pkgver=0.4.0
 pkgrel=1
 pkgdesc="NZXT Kraken control for Linux — loop monitoring, firmware fan curves, and the round LCD"
 arch=('any')
