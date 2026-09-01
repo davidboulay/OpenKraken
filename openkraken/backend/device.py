@@ -96,6 +96,21 @@ _DESYNC_MARKER = "missing messages"
 _LCD_PLAIN_RETRIES = 2
 _LCD_CLEAR_RETRIES = 2
 
+#: Substring identifying liquidctl's read-starvation assertion, raised by
+#: ``kraken3._read_until`` as ``AssertionError("missing messages (attempts=12,
+#: missing=1)")`` when the reply it is waiting for never arrives.
+_READ_STARVED_MARKER = "missing messages"
+
+#: How many times to re-issue a ``set_screen`` whose *opening handshake* was
+#: starved by HID contention. Every set_screen (brightness/orientation/liquid
+#: included, not just uploads) begins by asking the device for its current
+#: orientation and brightness and reading until the reply arrives; a second
+#: reader on the same hidraw node can consume that reply first. Measured on a
+#: Kraken 2024 Elite: 12/12 calls succeed with exclusive access, and this
+#: assertion appears only while another client holds the node. Re-issuing clears
+#: it, so a stolen reply no longer silently loses the setting for the session.
+_LCD_HANDSHAKE_RETRIES = 3
+
 
 class _BucketFailureWatcher(logging.Handler):
     """Detects the driver's swallowed LCD bucket-transfer failures.
@@ -1152,7 +1167,7 @@ class KrakenDevice:
                     self._lcd_setup_ok.clear()
                 if watcher is not None:
                     watcher.reset()
-                self._dev.set_screen("lcd", mode, value)
+                self._set_screen_once(mode, value)
                 # The driver swallows bucket-transfer failures (the switch guard
                 # kept the bad frame off-screen, so the panel held its last good
                 # image) and returns as if successful. Recover the content:
@@ -1173,10 +1188,17 @@ class KrakenDevice:
                 # Content/validation problem on a healthy device: surface it as a
                 # plain failure WITHOUT disconnecting.
                 logger.warning(
-                    "set_screen(lcd, %s, %r) rejected (recoverable): %s",
+                    "set_screen(lcd, %s, %r) rejected (recoverable): %s%s",
                     mode,
                     value,
                     exc,
+                    (
+                        " -- another process is reading this device's HID node "
+                        "(a second OpenKraken instance, or another monitoring "
+                        "tool); the setting was not applied"
+                        if _READ_STARVED_MARKER in str(exc)
+                        else ""
+                    ),
                 )
                 if _DESYNC_MARKER in str(exc):
                     # Not a content problem at all: the reply was crowded out of
@@ -1222,6 +1244,37 @@ class KrakenDevice:
             finally:
                 self._lcd_guard_active = False
 
+    def _set_screen_once(self, mode: str, value: Any) -> None:
+        """``dev.set_screen("lcd", mode, value)``, retried if its handshake starves.
+
+        Caller holds the lock. Raises whatever the driver raises once the
+        retries are used up, so the callers' existing recoverable/IO error
+        handling is unchanged.
+
+        Only the starvation signature (:data:`_READ_STARVED_MARKER`) is
+        retried. Every other ``AssertionError`` from the driver is a real
+        validation failure — an out-of-range brightness, an oversized GIF, a
+        bad channel — and must fail immediately rather than be attempted three
+        times.
+        """
+        for attempt in range(1, _LCD_HANDSHAKE_RETRIES + 1):
+            try:
+                self._dev.set_screen("lcd", mode, value)
+                return
+            except AssertionError as exc:
+                if (
+                    _READ_STARVED_MARKER not in str(exc)
+                    or attempt == _LCD_HANDSHAKE_RETRIES
+                ):
+                    raise
+                logger.debug(
+                    "LCD %s: handshake reply starved (%s); retry %d/%d",
+                    mode,
+                    exc,
+                    attempt,
+                    _LCD_HANDSHAKE_RETRIES,
+                )
+
     def _retry_lcd_upload(self, mode: str, value: Any, watcher: _BucketFailureWatcher) -> bool:
         """Recover a failed LCD upload. Caller holds the lock and ``watcher.failed``.
 
@@ -1233,7 +1286,7 @@ class KrakenDevice:
         for attempt in range(1, _LCD_PLAIN_RETRIES + 1):
             logger.debug("LCD %s: upload failed; plain retry %d/%d", mode, attempt, _LCD_PLAIN_RETRIES)
             watcher.reset()
-            self._dev.set_screen("lcd", mode, value)
+            self._set_screen_once(mode, value)
             if not watcher.failed:
                 return True
         for attempt in range(1, _LCD_CLEAR_RETRIES + 1):
@@ -1246,7 +1299,7 @@ class KrakenDevice:
             )
             self._dev._delete_all_buckets()  # noqa: SLF001
             watcher.reset()
-            self._dev.set_screen("lcd", mode, value)
+            self._set_screen_once(mode, value)
             if not watcher.failed:
                 return True
         logger.warning("LCD %s: upload still failing after plain + clear retries", mode)
