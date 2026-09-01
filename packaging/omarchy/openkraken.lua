@@ -1,0 +1,72 @@
+-- OpenKraken on Omarchy / Hyprland — optional window rules and autostart.
+--
+-- Omarchy configures Hyprland in Lua and loads your files after its own
+-- defaults, so this belongs in ~/.config/hypr/. Two ways to use it:
+--
+--   1. Copy the rules you want straight into ~/.config/hypr/hyprland.lua
+--      (window rules) and ~/.config/hypr/autostart.lua (the launch line).
+--   2. Or drop this whole file in as ~/.config/hypr/openkraken.lua and add
+--      `require("hypr.openkraken")` to ~/.config/hypr/hyprland.lua. (Omarchy's
+--      Lua path is rooted at ~/.config, which is why its own stock lines read
+--      `require("hypr.monitors")` and friends — a bare `require("openkraken")`
+--      will not resolve.)
+--
+-- After editing, validate — Hyprland auto-reloads, but errors are only visible
+-- if you look:
+--
+--     hyprctl reload && hyprctl configerrors
+--
+-- Nothing here is required: OpenKraken tiles and runs perfectly well with no
+-- rules at all. These just make it behave like the control panel it is.
+
+-- --------------------------------------------------------------------------
+-- Window rules
+-- --------------------------------------------------------------------------
+-- The Wayland app_id is "openkraken" (set by the app via setDesktopFileName),
+-- so a plain class match is all that is needed — verified with
+-- `hyprctl clients -j` on Omarchy 4.0.2, where the window reports
+-- class="openkraken", xwayland=false.
+--
+-- OpenKraken is a fixed-purpose control panel rather than a document window:
+-- floating and centred suits it better than a tile, the way Omarchy already
+-- treats its own utility windows (see $OMARCHY_PATH/default/hypr/apps/).
+o.window("^(openkraken)$", { float = true, center = true })
+-- 920 is the app's own setMinimumSize() width (gui/main_window.py:_MIN_SIZE);
+-- asking for anything narrower is silently clamped back up to it, so the rule
+-- would look like it had been ignored. The height clears the 846x688 default.
+o.window("^(openkraken)$", { size = { 920, 740 } })
+
+-- Optional extras, commented out — uncomment what you want:
+--
+-- Keep the gauges readable rather than translucent (Omarchy applies a default
+-- opacity to every window; opting out needs the tag removed *and* an override).
+-- o.window("^(openkraken)$", { tag = "-default-opacity" })
+-- o.window("^(openkraken)$", { opacity = "1 1" })
+--
+-- Park it on a dedicated workspace instead of wherever it opens.
+-- o.window("^(openkraken)$", { workspace = "9" })
+
+-- --------------------------------------------------------------------------
+-- Autostart
+-- --------------------------------------------------------------------------
+-- Only needed if you want CPU/GPU-temp curves, lighting effects, or live LCD
+-- sensor screens to come back on their own at login. Liquid-temp curves run
+-- inside the cooler's firmware and persist without the app running at all.
+--
+-- Put this line in ~/.config/hypr/autostart.lua:
+--
+--     o.launch_on_start("openkraken --minimized")
+--
+-- No `sleep` is needed to wait for the bar. OpenKraken deliberately does not
+-- probe QSystemTrayIcon.isSystemTrayAvailable() at startup (Qt caches that
+-- answer once per process, so asking too early would poison it for the whole
+-- session) — it creates the tray icon whenever the StatusNotifier watcher
+-- shows up on the session bus, which on Omarchy is the Quickshell bar.
+--
+-- The portable alternative, which works on Omarchy too because uwsm provides
+-- wayland-session-xdg-autostart@.target:
+--
+--     mkdir -p ~/.config/autostart
+--     cp /usr/share/applications/openkraken.desktop ~/.config/autostart/
+--     sed -i 's|^Exec=.*|Exec=/usr/bin/openkraken --minimized|' \
+--         ~/.config/autostart/openkraken.desktop
