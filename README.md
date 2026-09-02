@@ -286,20 +286,35 @@ Nothing is required: OpenKraken tiles and runs fine with no configuration, its
 tray icon works (Omarchy's Quickshell bar is a StatusNotifier host), and its
 Wayland `app_id` is `openkraken`.
 
-Two optional touches are shipped in
-[`packaging/omarchy/openkraken.lua`](packaging/omarchy/openkraken.lua) — window
-rules that float and centre the window like Omarchy's own utility windows, and
-an autostart line. Omarchy configures Hyprland in **Lua**, so the rules look
-like this rather than the classic `windowrule` lines:
+It **tiles** correctly, with no window rule needed: the Dashboard re-flows its
+gauge row and Display checkboxes when the tiler hands it a narrow column. Up to
+v0.4.0 that row was an unwrappable 830 px-wide layout, and since a tiler
+allocates whatever width it likes regardless of size hints, it used to shear off
+past the window edge — a float rule was the workaround.
 
-```lua
-o.window("^(openkraken)$", { float = true, center = true })
-o.window("^(openkraken)$", { size = { 920, 740 } })
+**Start it on login, hidden in the tray.** `uwsm` turns an XDG autostart entry
+into a real systemd user unit, which means journald logs and a way to test it
+without logging out:
+
+```sh
+mkdir -p ~/.config/autostart
+cp /usr/share/applications/openkraken.desktop ~/.config/autostart/
+sed -i 's|^Exec=.*|Exec=/usr/bin/openkraken --minimized|' \
+    ~/.config/autostart/openkraken.desktop
+systemctl --user daemon-reload
+systemctl --user start app-openkraken@autostart.service   # test it now
+journalctl --user -u app-openkraken@autostart.service      # and read it
 ```
 
-Copy what you want into `~/.config/hypr/hyprland.lua` (rules) and
-`~/.config/hypr/autostart.lua` (`o.launch_on_start("openkraken --minimized")`),
-then validate with `hyprctl reload && hyprctl configerrors`.
+Keep `--minimized` in the autostart copy rather than setting `start_minimized`
+in `config.json`, so launching by hand still opens the window. No `sleep` is
+needed for the cooler to appear: the engine retries every 5 s and re-applies
+everything once it connects, so a cold boot that races udev's `uaccess` ACL
+heals itself.
+
+[`packaging/omarchy/openkraken.lua`](packaging/omarchy/openkraken.lua) collects
+this plus the optional float rules, in Omarchy's Lua form. After any Hyprland
+change, validate with `hyprctl reload && hyprctl configerrors`.
 
 ## Supported devices
 

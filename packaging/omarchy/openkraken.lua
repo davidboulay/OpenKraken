@@ -27,14 +27,22 @@
 -- `hyprctl clients -j` on Omarchy 4.0.2, where the window reports
 -- class="openkraken", xwayland=false.
 --
--- OpenKraken is a fixed-purpose control panel rather than a document window:
--- floating and centred suits it better than a tile, the way Omarchy already
--- treats its own utility windows (see $OMARCHY_PATH/default/hypr/apps/).
-o.window("^(openkraken)$", { float = true, center = true })
--- 920 is the app's own setMinimumSize() width (gui/main_window.py:_MIN_SIZE);
--- asking for anything narrower is silently clamped back up to it, so the rule
--- would look like it had been ignored. The height clears the 846x688 default.
-o.window("^(openkraken)$", { size = { 920, 740 } })
+-- OpenKraken tiles correctly and needs no rule at all. Its Dashboard re-flows
+-- the gauge row and the Display checkboxes when the tiler hands it a narrow
+-- column, so nothing overflows or clips.
+--
+-- It did not always: the gauge row was an unwrappable QHBoxLayout with an
+-- 830 px floor, and a tiler allocates whatever width it likes regardless of
+-- size hints, at which point the row sheared off past the window edge. On
+-- v0.4.0 and older, the two rules below are the workaround.
+--
+-- Uncomment to float and centre it anyway, the way Omarchy treats its own
+-- utility windows (see $OMARCHY_PATH/default/hypr/apps/):
+-- o.window("^(openkraken)$", { float = true, center = true })
+-- o.window("^(openkraken)$", { size = { 920, 740 } })
+--
+-- Note the app's own setMinimumSize() is a floor Qt clamps to, so a rule
+-- narrower than it looks ignored: 640x560 as of v0.4.1, and 920x640 before.
 
 -- Optional extras, commented out — uncomment what you want:
 --
@@ -53,7 +61,23 @@ o.window("^(openkraken)$", { size = { 920, 740 } })
 -- sensor screens to come back on their own at login. Liquid-temp curves run
 -- inside the cooler's firmware and persist without the app running at all.
 --
--- Put this line in ~/.config/hypr/autostart.lua:
+-- The portable route works on Omarchy and is the one I would pick, because
+-- uwsm turns it into a real systemd user unit -- which means journald logs and
+-- a way to test it without logging out:
+--
+--     mkdir -p ~/.config/autostart
+--     cp /usr/share/applications/openkraken.desktop ~/.config/autostart/
+--     sed -i 's|^Exec=.*|Exec=/usr/bin/openkraken --minimized|' \
+--         ~/.config/autostart/openkraken.desktop
+--     systemctl --user daemon-reload
+--     systemctl --user start app-openkraken@autostart.service   # test it now
+--     journalctl --user -u app-openkraken@autostart.service      # and read it
+--
+-- Keep --minimized in the .desktop rather than setting start_minimized in
+-- config.json, so launching by hand still opens the window normally.
+--
+-- Or, to keep startup alongside the rest of your Hyprland config, put this in
+-- ~/.config/hypr/autostart.lua instead:
 --
 --     o.launch_on_start("openkraken --minimized")
 --
@@ -63,10 +87,6 @@ o.window("^(openkraken)$", { size = { 920, 740 } })
 -- session) — it creates the tray icon whenever the StatusNotifier watcher
 -- shows up on the session bus, which on Omarchy is the Quickshell bar.
 --
--- The portable alternative, which works on Omarchy too because uwsm provides
--- wayland-session-xdg-autostart@.target:
---
---     mkdir -p ~/.config/autostart
---     cp /usr/share/applications/openkraken.desktop ~/.config/autostart/
---     sed -i 's|^Exec=.*|Exec=/usr/bin/openkraken --minimized|' \
---         ~/.config/autostart/openkraken.desktop
+-- No sleep is needed to wait for the cooler, either: the engine retries the
+-- connection every 5 s and re-applies curves, LCD and lighting once it lands,
+-- so a cold boot that races udev's uaccess ACL heals itself.
