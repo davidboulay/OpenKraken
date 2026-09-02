@@ -57,7 +57,12 @@ class TimeSeriesGraph(QWidget):
         self._window_seconds = 300
         self._series: dict[str, _Series] = {}
 
-        self.setMinimumHeight(150)
+        # 150 here made the page over-constrained once the gauge row wraps to
+        # two on a narrow tile: two graphs demanded 300 px of a ~230 px
+        # remainder, and the layout resolved that by overlapping the Display box
+        # onto the gauges. The graphs are the elastic part of the page, so they
+        # are what should yield.
+        self.setMinimumHeight(90)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     # ------------------------------------------------------------------ #

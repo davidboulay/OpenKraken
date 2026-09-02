@@ -52,7 +52,9 @@ class GaugeTile(QWidget):
         self._value: float | None = None
         self._sub_text: str = ""
 
-        self.setMinimumSize(150, 170)
+        # Kept in step with dashboard._GAUGE_MIN_WIDTH: the gauge row wraps at
+        # that width, so a minimum wider than it would clip before wrapping.
+        self.setMinimumSize(120, 170)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
     # ------------------------------------------------------------------ #

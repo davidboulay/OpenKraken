@@ -14,11 +14,9 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -29,6 +27,7 @@ from PyQt6.QtWidgets import (
 from openkraken.gui import theme
 from openkraken.gui.widgets.gauge import GaugeTile
 from openkraken.gui.widgets.graph import TimeSeriesGraph
+from openkraken.gui.widgets.wrap_grid import WrapGrid
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, avoids hardware imports
     from openkraken.backend.device import DeviceStatus
@@ -53,6 +52,15 @@ _SPEED_METRICS: list[tuple[str, str]] = [
     ("pump_rpm", "Pump"),
     ("fan_rpm", "Fan"),
 ]
+
+# Narrowest width a gauge may be squeezed to before the row wraps. Below roughly
+# this the arc and its value stop being readable, so moving to another row is a
+# better trade than shrinking further.
+_GAUGE_MIN_WIDTH = 120
+
+# Same idea for the Display row: wide enough for the longest checkbox label
+# ("Liquid") and for the window picker to sit whole.
+_CONTROL_MIN_WIDTH = 96
 
 
 def _fmt(value: float | int | None, fmt: str = "{:.0f}") -> str:
@@ -86,7 +94,7 @@ class DashboardPage(QWidget):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(14)
 
-        root.addLayout(self._build_gauges())
+        root.addWidget(self._build_gauges())
         root.addWidget(self._build_controls())
         root.addLayout(self._build_graphs(), stretch=1)
 
@@ -98,9 +106,12 @@ class DashboardPage(QWidget):
             _LOGGER.exception("could not connect sample_ready signal")
 
     # ------------------------------------------------------------------ build
-    def _build_gauges(self) -> QHBoxLayout:
-        row = QHBoxLayout()
-        row.setSpacing(12)
+    def _build_gauges(self) -> QWidget:
+        # A wrapping grid, not a QHBoxLayout: five gauges in one unbreakable row
+        # pinned the page to an 830 px floor, and a tiling compositor happily
+        # allocates less than that, at which point the row overflowed the window
+        # instead of re-flowing. _GAUGE_MIN_WIDTH decides when it wraps.
+        row = WrapGrid(_GAUGE_MIN_WIDTH, spacing=12)
 
         self._g_cpu = GaugeTile(
             "CPU", "°C", 0, 100, theme.series_color("cpu_temp"), warn=75, crit=88
@@ -123,36 +134,44 @@ class DashboardPage(QWidget):
             self._g_pump,
             self._g_fan,
         ):
-            row.addWidget(gauge)
+            row.add_widget(gauge)
         return row
 
     def _build_controls(self) -> QWidget:
         box = QGroupBox("Display")
-        layout = QGridLayout(box)
-        layout.setContentsMargins(12, 10, 12, 10)
-        layout.setHorizontalSpacing(14)
+        outer = QVBoxLayout(box)
+        outer.setContentsMargins(12, 10, 12, 10)
+
+        # Same reasoning as the gauges: one checkbox per squeezed grid column
+        # sheared the labels ("Liquid" -> "Li") once the window went narrow.
+        # Wrapping keeps every label whole instead.
+        row = WrapGrid(_CONTROL_MIN_WIDTH, spacing=10)
 
         # Per-metric checkboxes; checking/unchecking toggles series visibility.
         self._checks: dict[str, QCheckBox] = {}
-        col = 0
         for metric, label in _TEMP_METRICS + _SPEED_METRICS:
             cb = QCheckBox(label)
             cb.setChecked(True)
             cb.toggled.connect(self._refresh_graphs)
             self._checks[metric] = cb
-            layout.addWidget(cb, 0, col)
-            col += 1
+            row.add_widget(cb)
 
-        layout.setColumnStretch(col, 1)
-
-        layout.addWidget(QLabel("Window"), 0, col + 1, Qt.AlignmentFlag.AlignRight)
+        # The window picker travels as a single item so its label can never
+        # wrap away from its combo box.
+        picker = QWidget()
+        picker_row = QHBoxLayout(picker)
+        picker_row.setContentsMargins(0, 0, 0, 0)
+        picker_row.setSpacing(6)
+        picker_row.addWidget(QLabel("Window"))
         self._window_combo = QComboBox()
         for label, _seconds in _WINDOWS:
             self._window_combo.addItem(label)
         self._window_combo.setCurrentIndex(1)
         self._window_combo.currentIndexChanged.connect(self._on_window_changed)
-        layout.addWidget(self._window_combo, 0, col + 2)
+        picker_row.addWidget(self._window_combo)
+        row.add_widget(picker)
 
+        outer.addWidget(row)
         return box
 
     def _build_graphs(self) -> QVBoxLayout:

@@ -64,7 +64,12 @@ _APPLIED_MSG_MS = 5_000
 _ERROR_MSG_MS = 8_000
 
 _SIDEBAR_WIDTH = 200
-_MIN_SIZE = (920, 640)
+# A floor, not a design width. Qt raises it to whatever the pages actually
+# need, which is currently the LCD page's fixed 320 px preview (~882 px), and a
+# tiling compositor ignores size hints entirely — so this only has to be small
+# enough not to fight either. It used to be 920, which was wider than a tile on
+# a split workspace and made the Dashboard overflow rather than re-flow.
+_MIN_SIZE = (640, 560)
 
 # Navigation entries: (label, page attribute name).
 _NAV_ITEMS = (
