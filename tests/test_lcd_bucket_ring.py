@@ -108,15 +108,91 @@ class FakeKrakenDriver:
 
 
 class LcdBucketRingTest(unittest.TestCase):
-    def _connected_device(self, **kwargs) -> tuple[KrakenDevice, FakeKrakenDriver]:
+    def _connected_device(
+        self, product_id: int | None = 0x3012, stream: str = "auto", **kwargs
+    ) -> tuple[KrakenDevice, FakeKrakenDriver]:
         dev = KrakenDevice()
         driver = FakeKrakenDriver(**kwargs)
         dev._dev = driver
         dev._connected = True
+        # The ring streamer is only used on the Kraken 2024 Elite in "auto".
+        dev.product_id = product_id
+        dev.lcd_stream_mode = stream
         # Panel is already in image/bucket mode, so frames take the ring path
         # instead of the full set_screen("static") re-establish.
         dev._lcd_stream_needs_reinit = False
         return dev, driver
+
+    @staticmethod
+    def _reconnect(dev: KrakenDevice, driver: FakeKrakenDriver) -> None:
+        """Model the engine re-opening the cooler after a disconnect."""
+        dev._dev = driver
+        dev._connected = True
+        dev._lcd_stream_needs_reinit = False
+
+    # ------------------------------------------------------- streaming path
+    def test_auto_uses_the_ring_only_on_the_2024_elite(self):
+        """Issue #8: the ring wedges a Z73's bucket memory; static is stable."""
+        for product, path in ((0x3012, "ring"), (0x3008, "static"), (0x300E, "static"), (None, "static")):
+            dev, driver = self._connected_device(product_id=product)
+            self.assertEqual(path, dev.lcd_stream_path(), hex(product or 0))
+            self.assertTrue(dev.set_lcd_sensor_frame("frame.png"))
+            if path == "ring":
+                self.assertEqual([0], driver.switched)
+                self.assertEqual(0, driver.screen_calls)
+            else:
+                self.assertEqual([], driver.deleted, "static path must not touch the ring")
+                self.assertEqual(1, driver.screen_calls, "frame goes through set_screen")
+
+    def test_a_forced_mode_overrides_the_product_choice(self):
+        dev, driver = self._connected_device(product_id=0x3008, stream="ring")
+        self.assertTrue(dev.set_lcd_sensor_frame("frame.png"))
+        self.assertEqual([0], driver.switched)
+
+        dev, driver = self._connected_device(product_id=0x3012, stream="static")
+        self.assertTrue(dev.set_lcd_sensor_frame("frame.png"))
+        self.assertEqual(1, driver.screen_calls)
+        self.assertEqual([], driver.deleted)
+
+    def test_auto_falls_back_to_static_after_a_bucket_wedge(self):
+        """Issue #8's loop: reconnect un-wedges the memory, then the ring wedges it again.
+
+        After the wedge-triggered reconnect, "auto" must stop using the ring on
+        this cooler and send frames through the full static upload instead.
+        """
+        dev, driver = self._connected_device(undeletable=set(range(6)))
+
+        for _ in range(4):
+            dev.set_lcd_sensor_frame("frame.png")
+        self.assertFalse(dev.is_connected, "wedged bucket memory still reconnects")
+
+        self._reconnect(dev, driver)
+        self.assertEqual("static", dev.lcd_stream_path())
+        self.assertTrue(dev.set_lcd_sensor_frame("frame.png"))
+        self.assertEqual(1, driver.screen_calls)
+        self.assertEqual(4, len(driver.deleted), "no further ring attempts")
+
+    def test_auto_falls_back_to_static_after_a_desync_streak(self):
+        """Issue #9: a desync on every ring frame, while static uploads are fine."""
+        dev, driver = self._connected_device(delete_desyncs=5)
+
+        results = [dev.set_lcd_sensor_frame("frame.png") for _ in range(5)]
+
+        self.assertEqual([False] * 5, results)
+        self.assertTrue(dev.is_connected, "a desync streak is not a dead cooler")
+        self.assertEqual("static", dev.lcd_stream_path())
+        self.assertTrue(dev.set_lcd_sensor_frame("frame.png"))
+        self.assertEqual(1, driver.screen_calls)
+
+    def test_a_forced_ring_never_falls_back(self):
+        dev, driver = self._connected_device(stream="ring", delete_desyncs=6)
+
+        for _ in range(6):
+            dev.set_lcd_sensor_frame("frame.png")
+
+        self.assertEqual("ring", dev.lcd_stream_path())
+        self.assertTrue(dev.set_lcd_sensor_frame("frame.png"))
+        self.assertEqual(0, driver.screen_calls)
 
     # ------------------------------------------------------- bucket ring
     def test_ring_advances_past_a_bucket_the_firmware_will_not_delete(self):

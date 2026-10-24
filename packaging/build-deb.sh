@@ -198,6 +198,13 @@ cat >"$PKGROOT/usr/lib/udev/rules.d/70-openkraken.rules" <<'UDEV'
 # (string-descriptor reads fail without it: "no langid (permission issue...)").
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
 SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+# Cooling via the kernel driver (optional). When nzxt_kraken3 is bound,
+# liquidctl writes duty curves/fixed speeds to its hwmon sysfs attributes,
+# which are root-only by default (OpenKraken then falls back to direct HID
+# writes, so this line is not required -- it just lets the kernel-driver path
+# work for your user, and for the liquidctl CLI). Sysfs attributes have no
+# device node for uaccess ACLs, hence the chmod.
+SUBSYSTEM=="hwmon", ACTION=="add", ATTRS{idVendor}=="1e71", RUN+="/bin/sh -c 'chmod a+w /sys%p/pwm[12] /sys%p/pwm[12]_enable /sys%p/temp[12]_auto_point*_pwm 2>/dev/null || true'"
 UDEV
 chmod 644 "$PKGROOT/usr/lib/udev/rules.d/70-openkraken.rules"
 

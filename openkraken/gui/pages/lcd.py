@@ -78,6 +78,13 @@ _ORIENTATIONS = [0, 90, 180, 270]
 #: Default liquid-ring colour (NZXT purple #7c3aed) used by the Reset button.
 _DEFAULT_RING_COLOR: tuple[int, int, int] = (124, 58, 237)
 
+#: LCD "Streaming" choices: (LcdConfig.sensor_stream value, label).
+_STREAM_MODES = (
+    ("auto", "Auto (recommended)"),
+    ("ring", "Bucket ring (2024 Elite)"),
+    ("static", "Full upload per frame"),
+)
+
 
 class RoundPreview(QLabel):
     """A QLabel that displays a pixmap clipped to an inscribed circle."""
@@ -238,6 +245,23 @@ class LcdPage(QWidget):
         self._interval_spin.setSuffix(" s")
         sform.addRow("Refresh", self._interval_spin)
 
+        # Upload path for streamed frames (issues #8/#9: the bucket ring that
+        # is flicker-free on the 2024 Elite wedges the Z53/Z63/Z73).
+        self._stream_combo = QComboBox()
+        self._stream_keys: list[str] = []
+        for key, label in _STREAM_MODES:
+            self._stream_keys.append(key)
+            self._stream_combo.addItem(label)
+        self._stream_combo.setToolTip(
+            "How each sensor frame is sent to the panel.\n"
+            "Auto: bucket ring on the Kraken 2024 Elite, full upload on other "
+            "models, and full upload if the ring misbehaves.\n"
+            "Bucket ring: flicker-free double-buffering (2024 Elite).\n"
+            "Full upload: the driver's complete per-frame upload; slower but "
+            "the stable choice on the Z53/Z63/Z73 and 2023 models."
+        )
+        sform.addRow("Streaming", self._stream_combo)
+
         # Liquid-ring colour (tints the rim arc on the ring/all-sensors styles).
         self._ring_color: tuple[int, int, int] = _DEFAULT_RING_COLOR
         self._ring_color_btn = QPushButton()
@@ -351,6 +375,8 @@ class LcdPage(QWidget):
         self._interval_spin.setValue(
             min(10.0, max(0.5, float(cfg.sensor_interval)))
         )
+        if cfg.sensor_stream in self._stream_keys:
+            self._stream_combo.setCurrentIndex(self._stream_keys.index(cfg.sensor_stream))
         self._ring_color = tuple(int(c) for c in cfg.ring_color)
         self._update_ring_color_swatch()
         self._sync_ring_color_visibility()
@@ -551,8 +577,13 @@ class LcdPage(QWidget):
             gif_path=self._lcd_cfg.gif_path,
             sensor_style=self._current_style(),
             sensor_interval=float(self._interval_spin.value()),
+            sensor_stream=self._current_stream(),
             ring_color=tuple(self._ring_color),
         )
+
+    def _current_stream(self) -> str:
+        i = self._stream_combo.currentIndex()
+        return self._stream_keys[i] if 0 <= i < len(self._stream_keys) else "auto"
 
     def _apply(self) -> None:
         cfg = self._build_config()

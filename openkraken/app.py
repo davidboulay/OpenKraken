@@ -14,6 +14,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 from pathlib import Path
 from typing import Callable
 
@@ -190,10 +191,47 @@ class _BucketSwitchNoiseFilter(logging.Filter):
     visible under --debug.
     """
 
-    _NEEDLE = "Failed to switch active bucket"
+    _NEEDLES = (
+        "Failed to switch active bucket",
+        # Emitted on every duty write once OpenKraken has fallen back to direct
+        # HID writes because the hwmon attributes are root-only (issue #10);
+        # OpenKraken already logged the one-time warning with the actual advice.
+        "directly writing duty curve despite",
+        "directly writing fixed speed despite",
+    )
 
     def filter(self, record: logging.LogRecord) -> bool:
-        return self._NEEDLE not in record.getMessage()
+        msg = record.getMessage()
+        return not any(n in msg for n in self._NEEDLES)
+
+
+def _install_excepthooks() -> None:
+    """Log uncaught exceptions instead of letting PyQt abort the process.
+
+    PyQt6 calls ``qFatal()`` -- SIGABRT, a core dump and *no* Python traceback
+    -- when a Python exception escapes a slot or a virtual override while
+    ``sys.excepthook`` is still the interpreter default.  Issue #10 reported
+    exactly that: the app died with SIGABRT while applying a cooling curve.
+    Replacing the hook keeps the app alive and puts the traceback in the log,
+    where it can be reported.  Engine/worker threads get the same treatment.
+    """
+
+    def hook(exc_type, exc, tb) -> None:
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc, tb)
+            return
+        _LOGGER.critical("uncaught exception", exc_info=(exc_type, exc, tb))
+
+    def thread_hook(args) -> None:
+        name = args.thread.name if args.thread is not None else "?"
+        _LOGGER.critical(
+            "uncaught exception in thread %s",
+            name,
+            exc_info=(args.exc_type, args.exc_value, args.exc_traceback),
+        )
+
+    sys.excepthook = hook
+    threading.excepthook = thread_hook
 
 
 def _configure_logging(debug: bool) -> None:
@@ -246,6 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     """
     args = _build_parser().parse_args(argv)
     _configure_logging(args.debug)
+    _install_excepthooks()
 
     _LOGGER.info("Starting OpenKraken %s", __version__)
 

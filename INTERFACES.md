@@ -165,8 +165,21 @@ class KrakenDevice:
 All setters return `True` on success, `False` on failure (exception logged, device
 marked disconnected on I/O errors so the engine can attempt reconnection).
 Import liquidctl lazily inside methods or at module top — module import must not
-touch hardware. `set_speed_profile` passes `direct_access=True`? **No** — call
-plainly; no hwmon is bound so the driver writes directly anyway.
+touch hardware. Duty writes (`set_speed_profile` / `set_fixed_speed`) go through
+`KrakenDevice._duty_write`: it calls the driver with
+`direct_access=self._hwmon_direct` (False at first), and when the `nzxt_kraken3`
+kernel driver is bound and its root-only hwmon sysfs refuses the write
+(`PermissionError`, issue #10) it retries once with `direct_access=True` and
+latches direct writes for the rest of the connection. A `PermissionError` is
+therefore never a "device gone" signal. On the dev machine no hwmon is bound, so
+the driver writes directly either way.
+
+Streamed sensor frames take one of two paths, chosen by
+`KrakenDevice.lcd_stream_path()` from `lcd_stream_mode` (`LcdConfig.sensor_stream`):
+the bucket **ring** (only on `_LCD_RING_STREAM_PRODUCTS` = the 2024 Elite 0x3012
+in `"auto"`) or the driver's full **static** upload per frame (every other
+model, and any cooler on which the ring wedged bucket memory or desynced
+`_LCD_RING_DESYNC_FALLBACK` times — issues #8/#9).
 
 ---
 

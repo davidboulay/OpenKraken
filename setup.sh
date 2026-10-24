@@ -47,11 +47,15 @@ UDEV_RULE_PATH="/etc/udev/rules.d/70-openkraken.rules"
 if [[ -r /etc/os-release ]] && grep -qE '^(ID|ID_LIKE)=.*\b(arch|archlinux)\b' /etc/os-release; then
     UDEV_RULE_BODY='# OpenKraken — non-root access to NZXT coolers (HID + USB bulk for the LCD).
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess"'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess"
+# Optional: lets the nzxt_kraken3 kernel driver'"'"'s hwmon duty attributes be written by users.
+SUBSYSTEM=="hwmon", ACTION=="add", ATTRS{idVendor}=="1e71", RUN+="/bin/sh -c '"'"'chmod a+w /sys%p/pwm[12] /sys%p/pwm[12]_enable /sys%p/temp[12]_auto_point*_pwm 2>/dev/null || true'"'"'"'
 else
     UDEV_RULE_BODY='# OpenKraken — non-root access to NZXT coolers (HID + USB bulk for the LCD).
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"'
+SUBSYSTEM=="usb", ATTRS{idVendor}=="1e71", TAG+="uaccess", MODE="0660", GROUP="plugdev"
+# Optional: lets the nzxt_kraken3 kernel driver'"'"'s hwmon duty attributes be written by users.
+SUBSYSTEM=="hwmon", ACTION=="add", ATTRS{idVendor}=="1e71", RUN+="/bin/sh -c '"'"'chmod a+w /sys%p/pwm[12] /sys%p/pwm[12]_enable /sys%p/temp[12]_auto_point*_pwm 2>/dev/null || true'"'"'"'
 fi
 
 # --- pretty progress --------------------------------------------------------

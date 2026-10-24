@@ -17,7 +17,7 @@ _udev_apply() {
     udevadm control --reload-rules >/dev/null 2>&1 || true
     # Scoped to the two subsystems the rule matches, rather than a full
     # `udevadm trigger`, so nothing else on the bus gets disturbed.
-    udevadm trigger --subsystem-match=hidraw --subsystem-match=usb >/dev/null 2>&1 || true
+    udevadm trigger --subsystem-match=hidraw --subsystem-match=usb --subsystem-match=hwmon >/dev/null 2>&1 || true
 }
 
 post_install() {

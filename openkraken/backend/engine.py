@@ -391,6 +391,7 @@ class ControlEngine(QThread):
             gif_path=cfg.gif_path,
             sensor_style=cfg.sensor_style,
             sensor_interval=cfg.sensor_interval,
+            sensor_stream=cfg.sensor_stream,
             ring_color=tuple(cfg.ring_color),
         )
         self._requests.put(lambda: self._do_apply_lcd(snapshot))
@@ -1063,6 +1064,8 @@ class ControlEngine(QThread):
         previous_mode = self._lcd_cfg.mode
         self._lcd_cfg = cfg
         self._config.lcd = cfg
+        # Which upload path streamed sensor frames take (ring vs full static).
+        self._device.lcd_stream_mode = cfg.sensor_stream
 
         if not self._device.is_connected:
             _LOGGER.debug("apply_lcd deferred: device disconnected")
