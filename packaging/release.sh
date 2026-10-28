@@ -6,6 +6,7 @@
 #   packaging/release.sh patch|minor|major     # bump from the current version
 #   packaging/release.sh X.Y.Z                  # set an explicit version
 #   packaging/release.sh --print                # just print the current version
+#   packaging/release.sh --apt-only X.Y.Z       # only step 6, for a release that already exists
 #
 # Steps it performs:
 #   1. compute the new version and write it to pyproject.toml + openkraken/__init__.py
@@ -14,6 +15,11 @@
 #   4. build the .deb (packaging/build-deb.sh) and, when makepkg is available,
 #      the Arch package (packaging/arch/build-pkg.sh)
 #   5. create a GitHub release for the tag with both packages attached (needs `gh`)
+#   6. rebuild the signed APT repo from every release .deb and push it to gh-pages
+#
+# --apt-only X.Y.Z skips the preflight and steps 1-5 and runs only step 6 for
+# an existing release: the fix for a release cut on a machine without the APT
+# signing keyring, or for an APT publish that failed.
 #
 # The GitHub Actions workflow (.github/workflows/release.yml) ALSO builds and
 # attaches a .deb on any pushed tag, so step 5 is belt-and-braces for local runs
@@ -34,6 +40,46 @@ err() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 warn() { printf '\033[1;33mwarning:\033[0m %s\n' "$*" >&2; }
 info() { printf '\033[1;35m==>\033[0m %s\n' "$*"; }
 
+# --- 6. APT repository (GitHub Pages) -----------------------------------------
+# Rebuild the flat, GPG-signed APT repo from ALL release .debs and force-push it
+# to gh-pages. The signing key lives ONLY on this machine
+# (~/.config/openkraken-apt/gnupg; backup in ~/.local/bin/.openkraken-bak/
+# apt-signing/) — CI's apt-repo.yml is an optional mirror that stays dormant
+# unless an APT_GPG_PRIVATE_KEY repo secret is configured.
+# Returns 1 (without doing anything) when a prerequisite is missing.
+APT_GNUPGHOME="$HOME/.config/openkraken-apt/gnupg"
+apt_prereqs_ok() {
+    [ -d "$APT_GNUPGHOME" ] && command -v gh >/dev/null 2>&1 \
+        && command -v dpkg-scanpackages >/dev/null 2>&1 \
+        && command -v apt-ftparchive >/dev/null 2>&1
+}
+publish_apt() {
+    apt_prereqs_ok || return 1
+    info "publishing the APT repository to gh-pages"
+    APT_TMP="$(mktemp -d)"
+    trap 'rm -rf "$APT_TMP"' EXIT
+    mkdir -p "$APT_TMP/debs"
+    for tag in $(gh release list --limit 100 --json tagName -q '.[].tagName'); do
+        gh release download "$tag" --pattern '*.deb' --dir "$APT_TMP/debs" \
+            --skip-existing 2>/dev/null || true
+    done
+    GNUPGHOME="$APT_GNUPGHOME" \
+        PAGES_URL="https://davidboulay.github.io/OpenKraken" \
+        "$SCRIPT_DIR/apt/build-repo.sh" "$APT_TMP/debs" "$APT_TMP/public"
+    touch "$APT_TMP/public/.nojekyll"
+    (
+        cd "$APT_TMP/public"
+        git init -q
+        git checkout -q -b gh-pages
+        git add -A
+        git -c user.name="davidboulay" \
+            -c user.email="89959743+davidboulay@users.noreply.github.com" \
+            commit -qm "APT repo: v$NEW ($(date -u +%FT%TZ))"
+        git push -f "https://github.com/davidboulay/OpenKraken" gh-pages
+    )
+    info "APT repository published (davidboulay.github.io/OpenKraken)"
+}
+
 current_version() {
     grep -oP '^__version__\s*=\s*"\K[0-9]+\.[0-9]+\.[0-9]+' "$INIT_PY"
 }
@@ -43,6 +89,16 @@ current_version() {
 CUR="$(current_version)" || err "could not read current version"
 
 if [ "${1:-}" = "--print" ]; then echo "$CUR"; exit 0; fi
+if [ "${1:-}" = "--apt-only" ]; then
+    [ $# -eq 2 ] || err "usage: release.sh --apt-only X.Y.Z"
+    NEW="$2"
+    case "$NEW" in [0-9]*.[0-9]*.[0-9]*) ;; *) err "invalid version: $NEW" ;; esac
+    command -v gh >/dev/null 2>&1 || err "gh not found; --apt-only needs it to list and download the releases"
+    gh release view "v$NEW" >/dev/null 2>&1 || err "no GitHub release v$NEW to publish the APT repo for"
+    publish_apt || err "APT publish needs the signing keyring ($APT_GNUPGHOME), dpkg-dev and apt-utils"
+    info "Done: APT repository republished for v$NEW."
+    exit 0
+fi
 [ $# -eq 1 ] || err "usage: release.sh patch|minor|major|X.Y.Z|--print"
 
 case "$1" in
@@ -143,41 +199,6 @@ else
     info "gh not found — tag pushed; the GitHub Actions workflow will build the release."
 fi
 
-# --- 6. APT repository (GitHub Pages) -----------------------------------------
-# Rebuild the flat, GPG-signed APT repo from ALL release .debs and force-push it
-# to gh-pages. The signing key lives ONLY on this machine
-# (~/.config/openkraken-apt/gnupg; backup in ~/.local/bin/.openkraken-bak/
-# apt-signing/) — CI's apt-repo.yml is an optional mirror that stays dormant
-# unless an APT_GPG_PRIVATE_KEY repo secret is configured.
-APT_GNUPGHOME="$HOME/.config/openkraken-apt/gnupg"
-if [ -d "$APT_GNUPGHOME" ] && command -v gh >/dev/null 2>&1 \
-        && command -v dpkg-scanpackages >/dev/null 2>&1 \
-        && command -v apt-ftparchive >/dev/null 2>&1; then
-    info "publishing the APT repository to gh-pages"
-    APT_TMP="$(mktemp -d)"
-    trap 'rm -rf "$APT_TMP"' EXIT
-    mkdir -p "$APT_TMP/debs"
-    for tag in $(gh release list --limit 100 --json tagName -q '.[].tagName'); do
-        gh release download "$tag" --pattern '*.deb' --dir "$APT_TMP/debs" \
-            --skip-existing 2>/dev/null || true
-    done
-    GNUPGHOME="$APT_GNUPGHOME" \
-        PAGES_URL="https://davidboulay.github.io/OpenKraken" \
-        "$SCRIPT_DIR/apt/build-repo.sh" "$APT_TMP/debs" "$APT_TMP/public"
-    touch "$APT_TMP/public/.nojekyll"
-    (
-        cd "$APT_TMP/public"
-        git init -q
-        git checkout -q -b gh-pages
-        git add -A
-        git -c user.name="davidboulay" \
-            -c user.email="89959743+davidboulay@users.noreply.github.com" \
-            commit -qm "APT repo: v$NEW ($(date -u +%FT%TZ))"
-        git push -f "https://github.com/davidboulay/OpenKraken" gh-pages
-    )
-    info "APT repository published (davidboulay.github.io/OpenKraken)"
-else
-    info "APT publish skipped (signing keyring or dpkg-dev/apt-utils/gh missing)."
-fi
+publish_apt || info "APT publish skipped (signing keyring or dpkg-dev/apt-utils/gh missing)."
 
 info "Done: v$NEW released."
