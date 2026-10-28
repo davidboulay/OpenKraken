@@ -1,0 +1,42 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Wed, 28 Oct 2026 08:05:45 +0000
+Label: OpenKraken
+Origin: OpenKraken
+Suite: stable
+MD5Sum:
+ 1a9701a31fd6961c8cae237425569182            16712 Packages
+ 6e4c4afa218d3275223a161b6718c47f             2338 Packages.gz
+ e315ba38dffae1925aaf046d905db670              144 Release
+SHA1:
+ 46bd6e4d287d258da7561ec0272813e6407e4bdd            16712 Packages
+ 17864c6a434854d83d818025a02410ff4dba902a             2338 Packages.gz
+ dfc0f8e584e0f6e917a12b1a3d6a632c9d2dbecf              144 Release
+SHA256:
+ cd04920704c787b705ffd3cc409e0b6f976e697a11cc4d54d6366c312eafc3a1            16712 Packages
+ 2e155a722719bfc741580b8d17a25ca4cc1edd0e3d765f6858e85989ce51d3e8             2338 Packages.gz
+ 5fc734bb5fdff12e6ad1ddc90768e5bf166b9f2df697d384fb40eac3b58a164c              144 Release
+SHA512:
+ 65d68ab7aa61dbdfa47f0a285c6b86e72b2b34911f6b61f6126154f7542d1e0b96db5a5fe5ad23de9ce473e29ba410c44e4621fdd6c6b30bdc87fa90eee62c57            16712 Packages
+ f86f3896562f052c8c11080c6946aec861315f8176252d57e71fb8198da12bd4ebb6a07b934e151608a3a9cd45053b8b5fd84b7bc1fc5b2ee996599656e74b86             2338 Packages.gz
+ f9d8fc9d3649d9e85a857be4b8c95099776ee6c933d8b5ac5304be6695ba433c7a86c6cb4e2092c70e29f72f3be676e8bb34d682e70c32002d0f3ecdf0ad5411              144 Release
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCgAdFiEECgdPw70XYmAByGybSDgc0dhay4AFAmrhrNkACgkQSDgc0dha
+y4AomA/+N5j0fVAHWLz5ykTSiOmLJ9uu6XUnHS2oO4a/JyqjDPCp5ZrMGYvc3XhZ
+Vd/+tWx0jHF0DSsOZzOagyStpaG78He6/v9LW45yWtIHTg1UQHmRbrIOWumnFfgQ
+ffVAu4aKeeS3JRuAORk1AzTfTEFAQTNdepK19OzCu9740+pNJ6vbu/IQnrBxV/EM
+ny5dD6KZPeaRsI6TBWOX7T33lDpWcJmYnaSjoOA9xUPsRTNr1S0/ZSdoYptockTH
+iOqNCPC5s7UXMAHo28kyhnbgY1KUg1AJPq/KTi7X6bHBN2PzkXwqYD4essfhXVvr
+HtcE5BrfCh49URV21ydMQ/4Q7iKP4BSrkRBOls83frT520flCRqCba9XsXA5pIMm
+6tMoIWv3hpAmVcwxn05sev5Ma+6r8E5XEg1g4zO2wKHrd+RLqvhItO1IGq/vv9J+
++qN0bI/Q/IBhaUEh1IORcyK/hkjI3GB1DsiatTp8mYNM/PkWiYOKDnCrHzvoGfTg
+SaPjrxoh+TuvRe7n5hZ7UZcKZGsiB83MZE/KNWBbUj4GDlB3iAYc2IXxbAdU2cGd
+bDB8eO7UeUxK9muizUB0mYeozQhggxQ8lDtyuSkF4lBf4omf4w+vJm1YayRL3PjW
+RPowYJH0HyWHSMWyp2k/U+qSlofgWows9M5Db2OevXWB908l7jY=
+=xlsq
+-----END PGP SIGNATURE-----
