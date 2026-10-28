@@ -391,6 +391,21 @@ everywhere else, and switches to the full upload for the rest of the session if
 the ring misbehaves anyway. Set it explicitly if you want to test the other
 path on your cooler.
 
+**Since Linux 7.3 the `nzxt_kraken3` kernel driver also binds the 2024 Elite**
+(issue #11). It reads the cooler's HID stream alongside OpenKraken, which
+garbles ring frames (the screen tiles, goes black, flashes back), so **Auto**
+uses the full upload while it is bound — the log says so at connect. That
+works, but the screen blinks on every frame. To get the flicker-free ring back,
+stop the module from loading; OpenKraken does not need it:
+
+```sh
+echo 'blacklist nzxt_kraken3' | sudo tee /etc/modprobe.d/openkraken-no-kraken3.conf
+sudo rmmod nzxt_kraken3   # or reboot
+```
+
+Check with `ls /sys/bus/hid/drivers/nzxt_kraken3/` (no `0003:1E71:…` entry =
+not bound), then restart OpenKraken.
+
 **Do my fan/pump curves survive closing the app — or a reboot?**
 **Liquid-temp curves** are written into the cooler's firmware as a 40-point
 table and **keep running after you close OpenKraken** (and across an OS reboot,
