@@ -13,7 +13,7 @@ and drive the round LCD, without rebooting into Windows.
 [![Platform](https://img.shields.io/badge/Linux-FC6F8C?style=flat-square&labelColor=1c1c1e&label=runs%20on)](#get-openkraken)
 [![License](https://img.shields.io/github/license/davidboulay/OpenKraken?style=flat-square&color=6b7280&labelColor=1c1c1e)](LICENSE)
 
-[**Install**](#get-openkraken) · [Features](#features) · [Updating](#updating) · [Permissions](#permissions) · [Supported devices](#supported-devices) · [FAQ](#faq)
+[**Install**](#get-openkraken) · [Features](#features) · [Updating](#updating) · [Permissions](#permissions) · [Supported devices](#supported-devices) · [FAQ](#faq) · [Project page](https://davidboulay.com/apps/openkraken/)
 
 </div>
 
